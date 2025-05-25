@@ -1,0 +1,12 @@
+# Ignore environment variables
+.env
+
+# Ignore node modules
+node_modules/
+
+# Optional: other common entries
+dist/
+build/
+*.log
+
+serviceAccountKey.json
