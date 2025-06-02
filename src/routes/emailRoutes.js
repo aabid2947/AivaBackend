@@ -1,6 +1,6 @@
 // src/routes/emailRoutes.js
 import express from 'express';
-import { emailController } from '../controllers/emailController.js';
+import { emailController } from '../controllers/emialController.js';
 import { authMiddleware } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
