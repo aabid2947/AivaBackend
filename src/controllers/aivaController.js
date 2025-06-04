@@ -1,5 +1,5 @@
 // src/controllers/aivaController.js
-import * as aivaService from '../services/aivaServices.js' // Assuming ESM, ensure aivaServices.js uses export
+import * as aivaService from '../services/aivaServices.js'; // Corrected filename
 
 export async function performCreateNewAivaChat(req, res) {
   try {
@@ -62,17 +62,36 @@ export async function performDeleteAivaChat(req, res) {
   }
 }
 
-// New function to list chats
 export async function listUserAivaChats(req, res) {
   try {
     const userId = req.user?.id || req.user?.uid;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated.' });
     }
-    const chats = await aivaService.listUserChats(userId); // We'll create this service function next
-    return res.status(200).json({ chats }); // Send as { chats: [...] } to match frontend expectation
+    const chats = await aivaService.listUserChats(userId);
+    return res.status(200).json({ chats });
   } catch (error) {
     console.error('Error in listUserAivaChats controller:', error);
     return res.status(500).json({ error: 'Failed to retrieve chats.' });
+  }
+}
+
+// New function to get messages for a specific chat
+export async function getAivaChatMessages(req, res) {
+  try {
+    const userId = req.user?.id || req.user?.uid;
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated.' });
+    }
+    const { chatId } = req.params;
+    if (!chatId) {
+      return res.status(400).json({ error: 'Chat ID is required in URL path.' });
+    }
+    // You can add a limit from query params if needed, e.g., req.query.limit
+    const messages = await aivaService.getChatHistory(userId, chatId);
+    return res.status(200).json({ messages }); // Send as { messages: [...] } to match frontend expectation
+  } catch (error) {
+    console.error(`Error in getAivaChatMessages controller for chat ${req.params.chatId}:`, error);
+    return res.status(500).json({ error: 'Failed to retrieve chat messages.' });
   }
 }

@@ -1,21 +1,24 @@
 // src/routes/aivaRoutes.js
-import express from 'express'
+import express from 'express';
 const router = express.Router();
-import * as  aivaController from '../controllers/aivaController.js';
-import  {authMiddleware} from '../middleware/authMiddleware.js'; // Assuming you have this for JWT
+// Assuming your controller file is indeed aivaController.js and exports named functions
+import * as aivaController from '../controllers/aivaController.js';
+// Assuming your authMiddleware.js uses a named export `authMiddleware`
+import { authMiddleware } from '../middleware/authMiddleware.js';
 
-// POST /api/aiva/interact
-// Protected route, requires authentication
-router.post('/chats', authMiddleware, aivaController.performCreateNewAivaChat);
-
+// List all chat sessions for the authenticated user
 router.get('/chats', authMiddleware, aivaController.listUserAivaChats);
 
+// Create a new chat session
+router.post('/chats', authMiddleware, aivaController.performCreateNewAivaChat);
+
+// Get messages for a specific chat session
+router.get('/chats/:chatId/messages', authMiddleware, aivaController.getAivaChatMessages); // New Route Added
 
 // Send a message to an existing chat session
-// We'll expect chatId in the request body for this one to keep URL simpler
 router.post('/chats/interact', authMiddleware, aivaController.handleAivaChatInteraction);
 
 // Delete a specific chat session
 router.delete('/chats/:chatId', authMiddleware, aivaController.performDeleteAivaChat);
 
-export default router
+export default router;
