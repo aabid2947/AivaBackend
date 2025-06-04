@@ -5,14 +5,13 @@ import  { generateGeminiText } from '../utils/geminiClient.js';
 export const AIVA_INITIAL_GREETING = "Hi there! I'm Aiva, your personal AI assistant. I'm here to simplify your day by helping with receiving and replying to phone calls, managing your emails, assisting with booking appointments, and even helping you remind about payments. What can I do for you today?";
 
 export const ConversationStates = {
-  INITIAL: 'INITIAL',
-  AWAITING_USER_REQUEST: 'AWAITING_USER_REQUEST', // After Aiva's greeting
+  INITIAL: 'INITIAL', // Conceptually, before any Firestore doc exists or for first creation
+  AWAITING_USER_REQUEST: 'AWAITING_USER_REQUEST',
   AWAITING_INTENT_CONFIRMATION: 'AWAITING_INTENT_CONFIRMATION',
   AWAITING_AFFIRMATIVE_NEGATIVE: 'AWAITING_AFFIRMATIVE_NEGATIVE',
-  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT', // Aiva asks for details
-  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT', // User provided details, Aiva extracts
-  AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT: 'AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT', // User said "no" to intent, Aiva asks "what then?"
-  // ... other path states
+  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT',
+  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT',
+  AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT: 'AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT',
   CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK'
 };
 
@@ -22,66 +21,69 @@ const IntentCategories = {
   APPOINTMENT_CALL: 'APPOINTMENT_CALL',
   MANAGE_CALLS: 'MANAGE_CALLS',
   NONE_OF_THE_ABOVE: 'NONE_OF_THE_ABOVE',
-  OUT_OF_CONTEXT: 'OUT_OF_CONTEXT' // Added for clarity
+  OUT_OF_CONTEXT: 'OUT_OF_CONTEXT'
 };
 
-// Helper to get or create conversation state
 export async function getConversation(userId) {
   const conversationRef = db.collection('aivaConversations').doc(userId);
   const conversationSnap = await conversationRef.get();
 
   if (!conversationSnap.exists) {
+    console.log(`aivaService: No conversation found for ${userId}. Creating new one.`);
     const initialState = {
       userId,
-      currentState: ConversationStates.INITIAL,
+      // Set directly to AWAITING_USER_REQUEST as the greeting is the first "turn"
+      currentState: ConversationStates.AWAITING_USER_REQUEST,
       lastProposedIntent: null,
-      lastAivaMessageId: null, // To track the last message Aiva sent for context
+      lastAivaMessageId: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     await conversationRef.set(initialState);
-    // Add initial greeting to chat history
-    const initialMessageRef = await addMessageToHistory(userId, 'assistant', AIVA_INITIAL_GREETING, ConversationStates.INITIAL);
+    const initialMessageRef = await addMessageToHistory(userId, 'assistant', AIVA_INITIAL_GREETING, ConversationStates.AWAITING_USER_REQUEST); // Log greeting with correct state
     await conversationRef.update({ lastAivaMessageId: initialMessageRef.id, updatedAt: new Date().toISOString() });
+    console.log(`aivaService: New conversation created for ${userId}, state: ${initialState.currentState}`);
     return { ...initialState, id: conversationRef.id, lastAivaMessageId: initialMessageRef.id };
   }
-  return { ...conversationSnap.data(), id: conversationSnap.id };
+  const existingConversation = { ...conversationSnap.data(), id: conversationSnap.id };
+  console.log(`aivaService: Existing conversation found for ${userId}, state: ${existingConversation.currentState}`);
+  return existingConversation;
 }
 
-export async function updateConversationState(userId, newState, updates = {}) {
+async function updateConversationState(userId, newState, updates = {}) {
   const conversationRef = db.collection('aivaConversations').doc(userId);
-  await conversationRef.update({
+  const updatePayload = {
     currentState: newState,
     updatedAt: new Date().toISOString(),
     ...updates
-  });
+  };
+  await conversationRef.update(updatePayload);
+  console.log(`aivaService: Updated conversation state for ${userId} to ${newState}, updates:`, updates);
 }
 
-export async function addMessageToHistory(userId, role, content, stateWhenSent = null, intentContext = null) {
+async function addMessageToHistory(userId, role, content, stateWhenSent = null, intentContext = null) {
   const messageData = {
     userId,
-    role, // 'user' or 'assistant'
+    role,
     content,
     timestamp: new Date().toISOString(),
-    stateWhenSent, // The conversation state when this message was generated/received
-    ...(intentContext && { intentContext }) // e.g. { proposedIntent: 'PAYMENT_REMINDER' }
+    stateWhenSent,
+    ...(intentContext && { intentContext })
   };
   const messageRef = await db.collection('aivaConversations').doc(userId).collection('messages').add(messageData);
+  console.log(`aivaService: Added message to history for ${userId}, role: ${role}, stateWhenSent: ${stateWhenSent}`);
   return messageRef;
 }
 
-export async function getChatHistory(userId, limit = 10) {
+async function getChatHistory(userId, limit = 10) {
     const messagesRef = db.collection('aivaConversations').doc(userId).collection('messages');
     const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(limit).get();
-    if (snapshot.empty) {
-        return [];
-    }
+    if (snapshot.empty) return [];
     const history = [];
     snapshot.forEach(doc => history.push({ id: doc.id, ...doc.data() }));
-    return history.reverse(); // oldest to newest
+    return history.reverse();
 }
 
-// --- Prompts for Gemini ---
 function getInitialIntentClassificationPrompt(userMessage) {
   return `User message: "${userMessage}"
 Classify this message into one of the following intents:
@@ -115,37 +117,58 @@ Example: {"task_description": "credit card bill", "reminder_date": "July 15th", 
 If the user's message doesn't seem to contain these details or is asking a question instead, return an empty JSON object like {}.`;
 }
 
-
-// --- Main Service Logic ---
 export async function handleUserMessage(userId, userMessageContent) {
-  if (!db) {
-    throw new Error('Database not initialized. Check Firebase Admin setup.');
-  }
+  if (!db) throw new Error('Database not initialized. Check Firebase Admin setup.');
 
   const conversation = await getConversation(userId);
+  
+  // If the message is the special initiation string and we're in AWAITING_USER_REQUEST,
+  // it means the initial greeting was already set up by getConversation.
+  // We should just return that greeting.
+  if (userMessageContent === "INITIATE_CONVERSATION_WITH_AIVA" && conversation.currentState === ConversationStates.AWAITING_USER_REQUEST) {
+    // The initial greeting is already the last message in history for a new conversation.
+    // Or, if it's an existing user re-initiating, we can just send the greeting.
+    const chatHistory = await getChatHistory(userId, 1);
+    const greetingToSend = (chatHistory.length > 0 && chatHistory[0].role === 'assistant')
+                           ? chatHistory[0].content
+                           : AIVA_INITIAL_GREETING;
+
+    // Ensure the state is indeed AWAITING_USER_REQUEST and log it if it's not already the greeting.
+    // No state change is needed here if it's already AWAITING_USER_REQUEST.
+    // If not already the greeting, add it.
+    if (greetingToSend !== AIVA_INITIAL_GREETING || (chatHistory.length > 0 && chatHistory[0].content !== AIVA_INITIAL_GREETING) ) {
+        // This case is unlikely if getConversation works correctly, but as a safeguard.
+        await addMessageToHistory(userId, 'assistant', AIVA_INITIAL_GREETING, ConversationStates.AWAITING_USER_REQUEST);
+    }
+    
+    return {
+      aivaResponse: greetingToSend,
+      currentState: ConversationStates.AWAITING_USER_REQUEST,
+      conversationId: conversation.id,
+      userId: userId
+    };
+  }
+
+  // Log user message for all other cases
   await addMessageToHistory(userId, 'user', userMessageContent, conversation.currentState);
 
   let aivaResponseContent = "I'm not sure how to respond to that right now.";
   let nextState = conversation.currentState;
   let geminiPrompt = null;
-  let geminiHistoryForPrompt = []; // For prompts that need conversational context
 
   switch (conversation.currentState) {
-    case ConversationStates.INITIAL: // Should technically transition to AWAITING_USER_REQUEST after greeting
     case ConversationStates.AWAITING_USER_REQUEST:
-    case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT: // After user said "no" and Aiva asked "what then?"
+    case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
       geminiPrompt = getInitialIntentClassificationPrompt(userMessageContent);
       const classifiedIntent = await generateGeminiText(geminiPrompt);
 
       if (classifiedIntent && Object.values(IntentCategories).includes(classifiedIntent.trim())) {
         const intent = classifiedIntent.trim();
         if (intent === IntentCategories.NONE_OF_THE_ABOVE || intent === IntentCategories.OUT_OF_CONTEXT) {
-          // For now, a generic response. Later, this could be a fallback function.
           aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, appointment calls, and managing phone calls. Is there something specific in these areas you need assistance with?";
-          nextState = ConversationStates.AWAITING_USER_REQUEST; // Loop back
+          nextState = ConversationStates.AWAITING_USER_REQUEST;
           await updateConversationState(userId, nextState);
         } else {
-          // Summarize and ask for confirmation
           let intentSummary = `It sounds like you're looking for help with ${intent.toLowerCase().replace(/_/g, ' ')}.`;
           if (intent === IntentCategories.MONITOR_EMAIL) intentSummary = "It sounds like you'd like me to help with monitoring your emails.";
           else if (intent === IntentCategories.PAYMENT_REMINDER) intentSummary = "It sounds like you want to set up a payment reminder.";
@@ -158,7 +181,7 @@ export async function handleUserMessage(userId, userMessageContent) {
         }
       } else {
         aivaResponseContent = "I'm having a little trouble understanding that. Could you please rephrase, or tell me if it's about emails, payments, appointments, or phone calls?";
-        nextState = ConversationStates.AWAITING_USER_REQUEST; // Stay in this state or a specific error state
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
         await updateConversationState(userId, nextState);
       }
       break;
@@ -169,29 +192,26 @@ export async function handleUserMessage(userId, userMessageContent) {
 
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversation.lastProposedIntent;
-        // Proceed to the specific path
         if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
           aivaResponseContent = "Great! To set up the payment reminder, I'll need a bit more information. What is the payment for, when do you need to be reminded, and is there a specific time?";
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
         } else {
-          // Placeholder for other paths
           aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet). What's the next step?`;
-          nextState = ConversationStates.AWAITING_USER_REQUEST; // Or a specific path start state
+          nextState = ConversationStates.AWAITING_USER_REQUEST;
         }
         await updateConversationState(userId, nextState, { lastUserAffirmation: userMessageContent });
-
       } else if (confirmationResult === 'NEGATIVE') {
         aivaResponseContent = "My apologies for misunderstanding. Could you please tell me what you'd like to do then?";
         nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
         await updateConversationState(userId, nextState, { lastProposedIntent: null });
-      } else { // UNCLEAR or error
+      } else {
         aivaResponseContent = "Sorry, I didn't quite catch that. Was that a 'yes' or a 'no' regarding my previous question?";
-        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE; // Stay in this state
-        await updateConversationState(userId, nextState);
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+        await updateConversationState(userId, nextState); // No need to update if staying in the same state without other changes
       }
       break;
 
-    case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT: // User provides details for payment
+    case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
       geminiPrompt = getPaymentDetailsExtractionPrompt(userMessageContent);
       const extractedDetailsRaw = await generateGeminiText(geminiPrompt);
       let extractedDetails;
@@ -203,8 +223,6 @@ export async function handleUserMessage(userId, userMessageContent) {
       }
 
       if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
-        // Store these details in Firestore (e.g., in a 'reminders' collection or update user profile)
-        // For now, just confirm
         const reminderData = {
             userId,
             task: extractedDetails.task_description,
@@ -213,17 +231,16 @@ export async function handleUserMessage(userId, userMessageContent) {
             createdAt: new Date().toISOString(),
             status: 'pending'
         };
-        // Example: await db.collection('paymentReminders').add(reminderData);
-        console.log('Extracted reminder details:', reminderData); // Log for now
+        console.log('Extracted reminder details:', reminderData);
 
         aivaResponseContent = `Alright, I've set a reminder for "${extractedDetails.task_description}" on ${extractedDetails.reminder_date}`;
         if(extractedDetails.reminder_time) aivaResponseContent += ` at ${extractedDetails.reminder_time}`;
         aivaResponseContent += `. Is there anything else I can help you with?`;
-        nextState = ConversationStates.AWAITING_USER_REQUEST; // Reset for new request
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
         await updateConversationState(userId, nextState, { lastProposedIntent: null, extractedPaymentDetails: reminderData });
       } else {
         aivaResponseContent = "I couldn't quite get all the details for the reminder. Could you please tell me again: what is the payment for, and when do you need the reminder (date and optionally time)?";
-        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT; // Ask again
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
         await updateConversationState(userId, nextState);
       }
       break;
@@ -245,5 +262,3 @@ export async function handleUserMessage(userId, userMessageContent) {
     userId: userId
   };
 }
-
-
