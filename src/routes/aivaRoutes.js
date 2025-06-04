@@ -6,6 +6,13 @@ import  {authMiddleware} from '../middleware/authMiddleware.js'; // Assuming you
 
 // POST /api/aiva/interact
 // Protected route, requires authentication
-router.post('/interact', authMiddleware, aivaController.handleAivaInteraction);
+router.post('/chats', authMiddleware, aivaController.performCreateNewAivaChat);
+
+// Send a message to an existing chat session
+// We'll expect chatId in the request body for this one to keep URL simpler
+router.post('/chats/interact', authMiddleware, aivaController.handleAivaChatInteraction);
+
+// Delete a specific chat session
+router.delete('/chats/:chatId', authMiddleware, aivaController.performDeleteAivaChat);
 
 export default router

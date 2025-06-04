@@ -1,11 +1,11 @@
 // src/services/aivaService.js
 import { db } from '../config/firebaseAdmin.js';
-import  { generateGeminiText } from '../utils/geminiClient.js';
+import { generateGeminiText } from '../utils/geminiClient.js';
+import { v4 as uuidv4 } from 'uuid';
 
 export const AIVA_INITIAL_GREETING = "Hi there! I'm Aiva, your personal AI assistant. I'm here to simplify your day by helping with receiving and replying to phone calls, managing your emails, assisting with booking appointments, and even helping you remind about payments. What can I do for you today?";
 
 export const ConversationStates = {
-  INITIAL: 'INITIAL', // Conceptually, before any Firestore doc exists or for first creation
   AWAITING_USER_REQUEST: 'AWAITING_USER_REQUEST',
   AWAITING_INTENT_CONFIRMATION: 'AWAITING_INTENT_CONFIRMATION',
   AWAITING_AFFIRMATIVE_NEGATIVE: 'AWAITING_AFFIRMATIVE_NEGATIVE',
@@ -24,67 +24,145 @@ const IntentCategories = {
   OUT_OF_CONTEXT: 'OUT_OF_CONTEXT'
 };
 
-export async function getConversation(userId) {
-  const conversationRef = db.collection('aivaConversations').doc(userId);
-  const conversationSnap = await conversationRef.get();
+// --- Helper for deleting subcollections ---
+async function deleteCollection(collectionPath, batchSize = 100) {
+  const collectionRef = db.collection(collectionPath);
+  const query = collectionRef.orderBy('__name__').limit(batchSize);
 
-  if (!conversationSnap.exists) {
-    console.log(`aivaService: No conversation found for ${userId}. Creating new one.`);
-    const initialState = {
-      userId,
-      // Set directly to AWAITING_USER_REQUEST as the greeting is the first "turn"
-      currentState: ConversationStates.AWAITING_USER_REQUEST,
-      lastProposedIntent: null,
-      lastAivaMessageId: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    await conversationRef.set(initialState);
-    const initialMessageRef = await addMessageToHistory(userId, 'assistant', AIVA_INITIAL_GREETING, ConversationStates.AWAITING_USER_REQUEST); // Log greeting with correct state
-    await conversationRef.update({ lastAivaMessageId: initialMessageRef.id, updatedAt: new Date().toISOString() });
-    console.log(`aivaService: New conversation created for ${userId}, state: ${initialState.currentState}`);
-    return { ...initialState, id: conversationRef.id, lastAivaMessageId: initialMessageRef.id };
-  }
-  const existingConversation = { ...conversationSnap.data(), id: conversationSnap.id };
-  console.log(`aivaService: Existing conversation found for ${userId}, state: ${existingConversation.currentState}`);
-  return existingConversation;
+  return new Promise((resolve, reject) => {
+    deleteQueryBatch(query, resolve).catch(reject);
+  });
 }
 
-async function updateConversationState(userId, newState, updates = {}) {
-  const conversationRef = db.collection('aivaConversations').doc(userId);
+async function deleteQueryBatch(query, resolve) {
+  const snapshot = await query.get();
+
+  if (snapshot.size === 0) {
+    // When there are no documents left, we are done
+    resolve();
+    return;
+  }
+
+  // Delete documents in a batch
+  const batch = db.batch();
+  snapshot.docs.forEach((doc) => {
+    batch.delete(doc.ref);
+  });
+  await batch.commit();
+
+  // Recurse on the next process tick, to avoid exploding the stack.
+  process.nextTick(() => {
+    deleteQueryBatch(query, resolve);
+  });
+}
+
+
+// --- New Chat Management Functions ---
+export async function createNewChat(userId, chatName = "New Chat") {
+  if (!db) throw new Error('Database not initialized.');
+  const chatId = uuidv4(); // Generate a unique ID for the chat
+  const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
+
+  const initialChatState = {
+    chatId,
+    userId,
+    chatName,
+    currentState: ConversationStates.AWAITING_USER_REQUEST,
+    lastProposedIntent: null,
+    lastAivaMessageId: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  await chatRef.set(initialChatState);
+
+  const initialMessage = {
+    role: 'assistant',
+    content: AIVA_INITIAL_GREETING,
+    timestamp: new Date().toISOString(), // ensure timestamp is recent
+  };
+  const initialMessageRef = await addMessageToHistory(userId, chatId, initialMessage.role, initialMessage.content, ConversationStates.AWAITING_USER_REQUEST);
+  await chatRef.update({ lastAivaMessageId: initialMessageRef.id, updatedAt: new Date().toISOString() });
+
+  console.log(`aivaService: New chat created for user ${userId} with chatId ${chatId}`);
+  return {
+    chatId,
+    chatName,
+    initialMessage: {
+        id: initialMessageRef.id, // Send message id as well
+        text: initialMessage.content,
+        sender: 'ai', // Consistent with frontend message structure
+        timestamp: initialMessage.timestamp
+    },
+    currentState: initialChatState.currentState,
+  };
+}
+
+export async function deleteChat(userId, chatId) {
+  if (!db) throw new Error('Database not initialized.');
+  const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
+  const messagesPath = `users/${userId}/aivaChats/${chatId}/messages`;
+
+  console.log(`aivaService: Attempting to delete messages for chat ${chatId} at path ${messagesPath}`);
+  await deleteCollection(messagesPath);
+  console.log(`aivaService: Messages deleted for chat ${chatId}. Deleting chat document.`);
+  await chatRef.delete();
+  console.log(`aivaService: Chat ${chatId} deleted successfully for user ${userId}.`);
+  return { message: `Chat ${chatId} deleted successfully.` };
+}
+
+// --- Modified Core Conversation Functions ---
+async function getConversationState(userId, chatId) {
+  const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
+  const chatSnap = await chatRef.get();
+
+  if (!chatSnap.exists) {
+    console.warn(`aivaService: Chat with ID ${chatId} not found for user ${userId}.`);
+    return null; // Or throw error, or create new? For now, null.
+  }
+  const chatData = chatSnap.data();
+  console.log(`aivaService: Fetched conversation state for user ${userId}, chat ${chatId}: ${chatData.currentState}`);
+  return chatData;
+}
+
+async function updateConversationState(userId, chatId, newState, updates = {}) {
+  const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
   const updatePayload = {
     currentState: newState,
     updatedAt: new Date().toISOString(),
     ...updates
   };
-  await conversationRef.update(updatePayload);
-  console.log(`aivaService: Updated conversation state for ${userId} to ${newState}, updates:`, updates);
+  await chatRef.update(updatePayload);
+  console.log(`aivaService: Updated chat state for user ${userId}, chat ${chatId} to ${newState}, updates:`, updates);
 }
 
-async function addMessageToHistory(userId, role, content, stateWhenSent = null, intentContext = null) {
+async function addMessageToHistory(userId, chatId, role, content, stateWhenSent = null, intentContext = null) {
   const messageData = {
-    userId,
+    userId, // Keep userId for potential direct queries on messages if ever needed
+    chatId, // Associate message with its chat
     role,
     content,
     timestamp: new Date().toISOString(),
     stateWhenSent,
     ...(intentContext && { intentContext })
   };
-  const messageRef = await db.collection('aivaConversations').doc(userId).collection('messages').add(messageData);
-  console.log(`aivaService: Added message to history for ${userId}, role: ${role}, stateWhenSent: ${stateWhenSent}`);
-  return messageRef;
+  const messageRef = await db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages').add(messageData);
+  console.log(`aivaService: Added message to history for user ${userId}, chat ${chatId}, role: ${role}`);
+  return messageRef; // Return the reference which has the ID
 }
 
-async function getChatHistory(userId, limit = 10) {
-    const messagesRef = db.collection('aivaConversations').doc(userId).collection('messages');
+// getChatHistory can remain similar but path changes
+export async function getChatHistory(userId, chatId, limit = 20) {
+    const messagesRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages');
     const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(limit).get();
     if (snapshot.empty) return [];
     const history = [];
     snapshot.forEach(doc => history.push({ id: doc.id, ...doc.data() }));
-    return history.reverse();
+    return history.reverse(); // oldest to newest
 }
 
-function getInitialIntentClassificationPrompt(userMessage) {
+
+// --- Prompts remain the same ---
+function getInitialIntentClassificationPrompt(userMessage) { /* ... same as before ... */
   return `User message: "${userMessage}"
 Classify this message into one of the following intents:
 1. ${IntentCategories.MONITOR_EMAIL} (for managing or monitoring emails)
@@ -96,15 +174,13 @@ Classify this message into one of the following intents:
 If the user's message is completely out of context or unrelated to these tasks (e.g., asking about the weather, philosophy), return "${IntentCategories.OUT_OF_CONTEXT}".
 Return ONLY the intent label (e.g., "${IntentCategories.MONITOR_EMAIL}").`;
 }
-
-function getAffirmativeNegativeClassificationPrompt(userReply, proposedIntentSummary) {
+function getAffirmativeNegativeClassificationPrompt(userReply, proposedIntentSummary) { /* ... same as before ... */
   return `The user was previously asked to confirm if their intent was related to: "${proposedIntentSummary}".
 User's reply: "${userReply}"
 Is this reply affirmative (e.g., yes, confirm, correct, sounds good) or negative (e.g., no, wrong, not that, incorrect)?
 Return "AFFIRMATIVE" or "NEGATIVE". If it's unclear or neither, return "UNCLEAR".`;
 }
-
-function getPaymentDetailsExtractionPrompt(userMessage) {
+function getPaymentDetailsExtractionPrompt(userMessage) { /* ... same as before ... */
   return `The user wants to set a payment reminder and has provided some details.
 User's message: "${userMessage}"
 Extract the following information:
@@ -117,46 +193,34 @@ Example: {"task_description": "credit card bill", "reminder_date": "July 15th", 
 If the user's message doesn't seem to contain these details or is asking a question instead, return an empty JSON object like {}.`;
 }
 
-export async function handleUserMessage(userId, userMessageContent) {
-  if (!db) throw new Error('Database not initialized. Check Firebase Admin setup.');
+// --- Main Service Logic (handleUserMessage now needs chatId) ---
+export async function handleUserMessage(userId, chatId, userMessageContent) {
+  if (!db) throw new Error('Database not initialized.');
+  if (!chatId) throw new Error('chatId is required to handle user message.');
 
-  const conversation = await getConversation(userId);
-  
-  // If the message is the special initiation string and we're in AWAITING_USER_REQUEST,
-  // it means the initial greeting was already set up by getConversation.
-  // We should just return that greeting.
-  if (userMessageContent === "INITIATE_CONVERSATION_WITH_AIVA" && conversation.currentState === ConversationStates.AWAITING_USER_REQUEST) {
-    // The initial greeting is already the last message in history for a new conversation.
-    // Or, if it's an existing user re-initiating, we can just send the greeting.
-    const chatHistory = await getChatHistory(userId, 1);
-    const greetingToSend = (chatHistory.length > 0 && chatHistory[0].role === 'assistant')
-                           ? chatHistory[0].content
-                           : AIVA_INITIAL_GREETING;
-
-    // Ensure the state is indeed AWAITING_USER_REQUEST and log it if it's not already the greeting.
-    // No state change is needed here if it's already AWAITING_USER_REQUEST.
-    // If not already the greeting, add it.
-    if (greetingToSend !== AIVA_INITIAL_GREETING || (chatHistory.length > 0 && chatHistory[0].content !== AIVA_INITIAL_GREETING) ) {
-        // This case is unlikely if getConversation works correctly, but as a safeguard.
-        await addMessageToHistory(userId, 'assistant', AIVA_INITIAL_GREETING, ConversationStates.AWAITING_USER_REQUEST);
-    }
-    
+  const conversationState = await getConversationState(userId, chatId);
+  if (!conversationState) {
+    // This might happen if chatId is invalid or deleted.
+    // Frontend should ideally handle this by creating a new chat.
+    // Or we could throw a more specific error.
+    console.error(`handleUserMessage: No conversation state found for userId ${userId}, chatId ${chatId}.`);
     return {
-      aivaResponse: greetingToSend,
-      currentState: ConversationStates.AWAITING_USER_REQUEST,
-      conversationId: conversation.id,
-      userId: userId
+        aivaResponse: "Sorry, I couldn't find our current conversation. Please try starting a new chat.",
+        currentState: null, // Or a specific error state
+        chatId: chatId,
+        userId: userId,
+        error: "Conversation not found"
     };
   }
 
-  // Log user message for all other cases
-  await addMessageToHistory(userId, 'user', userMessageContent, conversation.currentState);
+  // Log user message
+  await addMessageToHistory(userId, chatId, 'user', userMessageContent, conversationState.currentState);
 
   let aivaResponseContent = "I'm not sure how to respond to that right now.";
-  let nextState = conversation.currentState;
+  let nextState = conversationState.currentState;
   let geminiPrompt = null;
 
-  switch (conversation.currentState) {
+  switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
       geminiPrompt = getInitialIntentClassificationPrompt(userMessageContent);
@@ -167,31 +231,32 @@ export async function handleUserMessage(userId, userMessageContent) {
         if (intent === IntentCategories.NONE_OF_THE_ABOVE || intent === IntentCategories.OUT_OF_CONTEXT) {
           aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, appointment calls, and managing phone calls. Is there something specific in these areas you need assistance with?";
           nextState = ConversationStates.AWAITING_USER_REQUEST;
-          await updateConversationState(userId, nextState);
+          await updateConversationState(userId, chatId, nextState);
         } else {
           let intentSummary = `It sounds like you're looking for help with ${intent.toLowerCase().replace(/_/g, ' ')}.`;
+          // ... (intent summary specifics as before)
           if (intent === IntentCategories.MONITOR_EMAIL) intentSummary = "It sounds like you'd like me to help with monitoring your emails.";
           else if (intent === IntentCategories.PAYMENT_REMINDER) intentSummary = "It sounds like you want to set up a payment reminder.";
           else if (intent === IntentCategories.APPOINTMENT_CALL) intentSummary = "It seems you're interested in making a phone call for an appointment.";
           else if (intent === IntentCategories.MANAGE_CALLS) intentSummary = "It looks like you need assistance with managing phone calls.";
-          
+
           aivaResponseContent = `${intentSummary} Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
-          await updateConversationState(userId, nextState, { lastProposedIntent: intent });
+          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: intent });
         }
       } else {
         aivaResponseContent = "I'm having a little trouble understanding that. Could you please rephrase, or tell me if it's about emails, payments, appointments, or phone calls?";
         nextState = ConversationStates.AWAITING_USER_REQUEST;
-        await updateConversationState(userId, nextState);
+        await updateConversationState(userId, chatId, nextState);
       }
       break;
 
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
-      geminiPrompt = getAffirmativeNegativeClassificationPrompt(userMessageContent, conversation.lastProposedIntent);
+      geminiPrompt = getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent);
       const confirmationResult = await generateGeminiText(geminiPrompt);
 
       if (confirmationResult === 'AFFIRMATIVE') {
-        const confirmedIntent = conversation.lastProposedIntent;
+        const confirmedIntent = conversationState.lastProposedIntent;
         if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
           aivaResponseContent = "Great! To set up the payment reminder, I'll need a bit more information. What is the payment for, when do you need to be reminded, and is there a specific time?";
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
@@ -199,15 +264,15 @@ export async function handleUserMessage(userId, userMessageContent) {
           aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet). What's the next step?`;
           nextState = ConversationStates.AWAITING_USER_REQUEST;
         }
-        await updateConversationState(userId, nextState, { lastUserAffirmation: userMessageContent });
+        await updateConversationState(userId, chatId, nextState, { lastUserAffirmation: userMessageContent });
       } else if (confirmationResult === 'NEGATIVE') {
         aivaResponseContent = "My apologies for misunderstanding. Could you please tell me what you'd like to do then?";
         nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
-        await updateConversationState(userId, nextState, { lastProposedIntent: null });
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
       } else {
         aivaResponseContent = "Sorry, I didn't quite catch that. Was that a 'yes' or a 'no' regarding my previous question?";
-        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
-        await updateConversationState(userId, nextState); // No need to update if staying in the same state without other changes
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE; // Stay in this state
+        await updateConversationState(userId, chatId, nextState);
       }
       break;
 
@@ -224,41 +289,47 @@ export async function handleUserMessage(userId, userMessageContent) {
 
       if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
         const reminderData = {
-            userId,
+            userId, // Keep for potential direct queries on reminders
+            chatId, // Associate reminder with chat
             task: extractedDetails.task_description,
             date: extractedDetails.reminder_date,
             time: extractedDetails.reminder_time || 'any time',
             createdAt: new Date().toISOString(),
             status: 'pending'
         };
+        // Example: Store reminder in a separate collection or within the chat document
+        // await db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('reminders').add(reminderData);
+        // OR await updateConversationState(userId, chatId, nextState, { reminders: admin.firestore.FieldValue.arrayUnion(reminderData) });
         console.log('Extracted reminder details:', reminderData);
 
         aivaResponseContent = `Alright, I've set a reminder for "${extractedDetails.task_description}" on ${extractedDetails.reminder_date}`;
         if(extractedDetails.reminder_time) aivaResponseContent += ` at ${extractedDetails.reminder_time}`;
         aivaResponseContent += `. Is there anything else I can help you with?`;
         nextState = ConversationStates.AWAITING_USER_REQUEST;
-        await updateConversationState(userId, nextState, { lastProposedIntent: null, extractedPaymentDetails: reminderData });
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, extractedPaymentDetailsPath: reminderData });
       } else {
         aivaResponseContent = "I couldn't quite get all the details for the reminder. Could you please tell me again: what is the payment for, and when do you need the reminder (date and optionally time)?";
         nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-        await updateConversationState(userId, nextState);
+        await updateConversationState(userId, chatId, nextState);
       }
       break;
 
     default:
-      console.warn(`Unhandled conversation state: ${conversation.currentState} for user ${userId}`);
+      console.warn(`Unhandled conversation state: ${conversationState.currentState} for user ${userId}, chat ${chatId}`);
       aivaResponseContent = "I seem to be a bit lost in our conversation. Could we start over with what you need?";
       nextState = ConversationStates.AWAITING_USER_REQUEST;
-      await updateConversationState(userId, nextState, { lastProposedIntent: null });
+      await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
   }
 
-  const aivaMessageRef = await addMessageToHistory(userId, 'assistant', aivaResponseContent, nextState);
-  await db.collection('aivaConversations').doc(userId).update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
+  const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
+  await db.collection('users').doc(userId).collection('aivaChats').doc(chatId)
+          .update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
 
   return {
     aivaResponse: aivaResponseContent,
     currentState: nextState,
-    conversationId: conversation.id,
+    chatId: chatId, // Return chatId for frontend context
     userId: userId
   };
 }
+
