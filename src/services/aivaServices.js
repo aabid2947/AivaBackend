@@ -200,20 +200,16 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
   const conversationState = await getConversationState(userId, chatId);
   if (!conversationState) {
-    // This might happen if chatId is invalid or deleted.
-    // Frontend should ideally handle this by creating a new chat.
-    // Or we could throw a more specific error.
     console.error(`handleUserMessage: No conversation state found for userId ${userId}, chatId ${chatId}.`);
     return {
         aivaResponse: "Sorry, I couldn't find our current conversation. Please try starting a new chat.",
-        currentState: null, // Or a specific error state
+        currentState: null,
         chatId: chatId,
         userId: userId,
         error: "Conversation not found"
     };
   }
 
-  // Log user message
   await addMessageToHistory(userId, chatId, 'user', userMessageContent, conversationState.currentState);
 
   let aivaResponseContent = "I'm not sure how to respond to that right now.";
@@ -224,25 +220,27 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
       geminiPrompt = getInitialIntentClassificationPrompt(userMessageContent);
-      const classifiedIntent = await generateGeminiText(geminiPrompt);
+      const classifiedIntentRaw = await generateGeminiText(geminiPrompt);
+      console.log(`aivaService: Gemini intent classification raw response: "${classifiedIntentRaw}"`);
+      const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
 
-      if (classifiedIntent && Object.values(IntentCategories).includes(classifiedIntent.trim())) {
-        const intent = classifiedIntent.trim();
-        if (intent === IntentCategories.NONE_OF_THE_ABOVE || intent === IntentCategories.OUT_OF_CONTEXT) {
+
+      if (classifiedIntent && Object.values(IntentCategories).map(val => val.toUpperCase()).includes(classifiedIntent)) {
+        // const intent = classifiedIntent; // Already uppercased
+        if (classifiedIntent === IntentCategories.NONE_OF_THE_ABOVE || classifiedIntent === IntentCategories.OUT_OF_CONTEXT) {
           aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, appointment calls, and managing phone calls. Is there something specific in these areas you need assistance with?";
           nextState = ConversationStates.AWAITING_USER_REQUEST;
           await updateConversationState(userId, chatId, nextState);
         } else {
-          let intentSummary = `It sounds like you're looking for help with ${intent.toLowerCase().replace(/_/g, ' ')}.`;
-          // ... (intent summary specifics as before)
-          if (intent === IntentCategories.MONITOR_EMAIL) intentSummary = "It sounds like you'd like me to help with monitoring your emails.";
-          else if (intent === IntentCategories.PAYMENT_REMINDER) intentSummary = "It sounds like you want to set up a payment reminder.";
-          else if (intent === IntentCategories.APPOINTMENT_CALL) intentSummary = "It seems you're interested in making a phone call for an appointment.";
-          else if (intent === IntentCategories.MANAGE_CALLS) intentSummary = "It looks like you need assistance with managing phone calls.";
+          let intentSummary = `It sounds like you're looking for help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}.`;
+          if (classifiedIntent === IntentCategories.MONITOR_EMAIL) intentSummary = "It sounds like you'd like me to help with monitoring your emails.";
+          else if (classifiedIntent === IntentCategories.PAYMENT_REMINDER) intentSummary = "It sounds like you want to set up a payment reminder.";
+          else if (classifiedIntent === IntentCategories.APPOINTMENT_CALL) intentSummary = "It seems you're interested in making a phone call for an appointment.";
+          else if (classifiedIntent === IntentCategories.MANAGE_CALLS) intentSummary = "It looks like you need assistance with managing phone calls.";
 
           aivaResponseContent = `${intentSummary} Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
-          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: intent });
+          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
         }
       } else {
         aivaResponseContent = "I'm having a little trouble understanding that. Could you please rephrase, or tell me if it's about emails, payments, appointments, or phone calls?";
@@ -253,7 +251,9 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
       geminiPrompt = getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent);
-      const confirmationResult = await generateGeminiText(geminiPrompt);
+      const confirmationResultRaw = await generateGeminiText(geminiPrompt);
+      console.log(`aivaService: Gemini affirmative/negative raw response: "${confirmationResultRaw}" for proposed intent: ${conversationState.lastProposedIntent}`); // Logging
+      const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : null; // Normalize
 
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversationState.lastProposedIntent;
@@ -269,10 +269,11 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         aivaResponseContent = "My apologies for misunderstanding. Could you please tell me what you'd like to do then?";
         nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
-      } else {
+      } else { // UNCLEAR or error from Gemini or null
         aivaResponseContent = "Sorry, I didn't quite catch that. Was that a 'yes' or a 'no' regarding my previous question?";
         nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE; // Stay in this state
-        await updateConversationState(userId, chatId, nextState);
+        // No need to call updateConversationState if only aivaResponseContent changes and nextState is the same
+        // await updateConversationState(userId, chatId, nextState); // Only if other state fields were changing
       }
       break;
 
@@ -289,17 +290,14 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
       if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
         const reminderData = {
-            userId, // Keep for potential direct queries on reminders
-            chatId, // Associate reminder with chat
+            userId, 
+            chatId, 
             task: extractedDetails.task_description,
             date: extractedDetails.reminder_date,
             time: extractedDetails.reminder_time || 'any time',
             createdAt: new Date().toISOString(),
             status: 'pending'
         };
-        // Example: Store reminder in a separate collection or within the chat document
-        // await db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('reminders').add(reminderData);
-        // OR await updateConversationState(userId, chatId, nextState, { reminders: admin.firestore.FieldValue.arrayUnion(reminderData) });
         console.log('Extracted reminder details:', reminderData);
 
         aivaResponseContent = `Alright, I've set a reminder for "${extractedDetails.task_description}" on ${extractedDetails.reminder_date}`;
@@ -328,7 +326,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   return {
     aivaResponse: aivaResponseContent,
     currentState: nextState,
-    chatId: chatId, // Return chatId for frontend context
+    chatId: chatId, 
     userId: userId
   };
 }
