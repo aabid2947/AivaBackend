@@ -15,6 +15,8 @@ export const ConversationStates = {
   CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK'
 };
 
+
+
 const IntentCategories = {
   MONITOR_EMAIL: 'MONITOR_EMAIL',
   PAYMENT_REMINDER: 'PAYMENT_REMINDER',
@@ -38,19 +40,16 @@ async function deleteQueryBatch(query, resolve) {
   const snapshot = await query.get();
 
   if (snapshot.size === 0) {
-    // When there are no documents left, we are done
     resolve();
     return;
   }
 
-  // Delete documents in a batch
   const batch = db.batch();
   snapshot.docs.forEach((doc) => {
     batch.delete(doc.ref);
   });
   await batch.commit();
 
-  // Recurse on the next process tick, to avoid exploding the stack.
   process.nextTick(() => {
     deleteQueryBatch(query, resolve);
   });
@@ -60,7 +59,7 @@ async function deleteQueryBatch(query, resolve) {
 // --- New Chat Management Functions ---
 export async function createNewChat(userId, chatName = "New Chat") {
   if (!db) throw new Error('Database not initialized.');
-  const chatId = uuidv4(); // Generate a unique ID for the chat
+  const chatId = uuidv4();
   const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
 
   const initialChatState = {
@@ -78,7 +77,7 @@ export async function createNewChat(userId, chatName = "New Chat") {
   const initialMessage = {
     role: 'assistant',
     content: AIVA_INITIAL_GREETING,
-    timestamp: new Date().toISOString(), // ensure timestamp is recent
+    timestamp: new Date().toISOString(),
   };
   const initialMessageRef = await addMessageToHistory(userId, chatId, initialMessage.role, initialMessage.content, ConversationStates.AWAITING_USER_REQUEST);
   await chatRef.update({ lastAivaMessageId: initialMessageRef.id, updatedAt: new Date().toISOString() });
@@ -88,9 +87,9 @@ export async function createNewChat(userId, chatName = "New Chat") {
     chatId,
     chatName,
     initialMessage: {
-        id: initialMessageRef.id, // Send message id as well
+        id: initialMessageRef.id,
         text: initialMessage.content,
-        sender: 'ai', // Consistent with frontend message structure
+        sender: 'ai',
         timestamp: initialMessage.timestamp
     },
     currentState: initialChatState.currentState,
@@ -117,7 +116,7 @@ async function getConversationState(userId, chatId) {
 
   if (!chatSnap.exists) {
     console.warn(`aivaService: Chat with ID ${chatId} not found for user ${userId}.`);
-    return null; // Or throw error, or create new? For now, null.
+    return null;
   }
   const chatData = chatSnap.data();
   console.log(`aivaService: Fetched conversation state for user ${userId}, chat ${chatId}: ${chatData.currentState}`);
@@ -137,8 +136,8 @@ async function updateConversationState(userId, chatId, newState, updates = {}) {
 
 async function addMessageToHistory(userId, chatId, role, content, stateWhenSent = null, intentContext = null) {
   const messageData = {
-    userId, // Keep userId for potential direct queries on messages if ever needed
-    chatId, // Associate message with its chat
+    userId,
+    chatId,
     role,
     content,
     timestamp: new Date().toISOString(),
@@ -147,22 +146,20 @@ async function addMessageToHistory(userId, chatId, role, content, stateWhenSent 
   };
   const messageRef = await db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages').add(messageData);
   console.log(`aivaService: Added message to history for user ${userId}, chat ${chatId}, role: ${role}`);
-  return messageRef; // Return the reference which has the ID
+  return messageRef;
 }
 
-// getChatHistory can remain similar but path changes
 export async function getChatHistory(userId, chatId, limit = 20) {
     const messagesRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages');
     const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(limit).get();
     if (snapshot.empty) return [];
     const history = [];
     snapshot.forEach(doc => history.push({ id: doc.id, ...doc.data() }));
-    return history.reverse(); // oldest to newest
+    return history.reverse();
 }
 
-
-// --- Prompts remain the same ---
-function getInitialIntentClassificationPrompt(userMessage) { /* ... same as before ... */
+// --- Prompts ---
+function getInitialIntentClassificationPrompt(userMessage) {
   return `User message: "${userMessage}"
 Classify this message into one of the following intents:
 1. ${IntentCategories.MONITOR_EMAIL} (for managing or monitoring emails)
@@ -174,26 +171,30 @@ Classify this message into one of the following intents:
 If the user's message is completely out of context or unrelated to these tasks (e.g., asking about the weather, philosophy), return "${IntentCategories.OUT_OF_CONTEXT}".
 Return ONLY the intent label (e.g., "${IntentCategories.MONITOR_EMAIL}").`;
 }
-function getAffirmativeNegativeClassificationPrompt(userReply, proposedIntentSummary) { /* ... same as before ... */
+function getAffirmativeNegativeClassificationPrompt(userReply, proposedIntentSummary) {
   return `The user was previously asked to confirm if their intent was related to: "${proposedIntentSummary}".
 User's reply: "${userReply}"
 Is this reply affirmative (e.g., yes, confirm, correct, sounds good) or negative (e.g., no, wrong, not that, incorrect)?
 Return "AFFIRMATIVE" or "NEGATIVE". If it's unclear or neither, return "UNCLEAR".`;
 }
-function getPaymentDetailsExtractionPrompt(userMessage) { /* ... same as before ... */
+
+function getPaymentDetailsExtractionPrompt(userMessage) {
   return `The user wants to set a payment reminder and has provided some details.
 User's message: "${userMessage}"
 Extract the following information:
-- task_description (a short description of what the payment is for, e.g., "credit card bill", "rent payment")
-- reminder_date (when to remind, e.g., "next Tuesday", "July 15th", "tomorrow")
-- reminder_time (specific time if mentioned, e.g., "at 3 PM", "around noon", "in the evening")
+- "task_description": What the payment is for (e.g., "credit card bill", "rent payment").
+- "reminder_date": The date for the reminder (e.g., "next Tuesday", "July 15th", "tomorrow").
+- "reminder_time": The specific time for the reminder, if mentioned (e.g., "at 3 PM", "around noon", "evening").
 
-Return this information as a VALID JSON object. If a piece of information is not found, use null for its value.
-Example: {"task_description": "credit card bill", "reminder_date": "July 15th", "reminder_time": null}
-If the user's message doesn't seem to contain these details or is asking a question instead, return an empty JSON object like {}.`;
+Return this information as a VALID JSON object with exactly these keys. If a piece of information is not found, use null for its value.
+Example 1 (all details): {"task_description": "credit card bill", "reminder_date": "July 15th", "reminder_time": "3:00 PM"}
+Example 2 (no time): {"task_description": "rent payment", "reminder_date": "next Tuesday", "reminder_time": null}
+Example 3 (only task): {"task_description": "electricity bill", "reminder_date": null, "reminder_time": null}
+If the user's message doesn't seem to contain any of these specific details or is asking a question, return an empty JSON object like {}.
+Ensure the output is ONLY the JSON object.`;
 }
 
-// --- Main Service Logic (handleUserMessage now needs chatId) ---
+// --- Main Service Logic ---
 export async function handleUserMessage(userId, chatId, userMessageContent) {
   if (!db) throw new Error('Database not initialized.');
   if (!chatId) throw new Error('chatId is required to handle user message.');
@@ -203,10 +204,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     console.error(`handleUserMessage: No conversation state found for userId ${userId}, chatId ${chatId}.`);
     return {
         aivaResponse: "Sorry, I couldn't find our current conversation. Please try starting a new chat.",
-        currentState: null,
-        chatId: chatId,
-        userId: userId,
-        error: "Conversation not found"
+        currentState: null, chatId: chatId, userId: userId, error: "Conversation not found"
     };
   }
 
@@ -224,9 +222,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       console.log(`aivaService: Gemini intent classification raw response: "${classifiedIntentRaw}"`);
       const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
 
-
       if (classifiedIntent && Object.values(IntentCategories).map(val => val.toUpperCase()).includes(classifiedIntent)) {
-        // const intent = classifiedIntent; // Already uppercased
         if (classifiedIntent === IntentCategories.NONE_OF_THE_ABOVE || classifiedIntent === IntentCategories.OUT_OF_CONTEXT) {
           aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, appointment calls, and managing phone calls. Is there something specific in these areas you need assistance with?";
           nextState = ConversationStates.AWAITING_USER_REQUEST;
@@ -237,7 +233,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           else if (classifiedIntent === IntentCategories.PAYMENT_REMINDER) intentSummary = "It sounds like you want to set up a payment reminder.";
           else if (classifiedIntent === IntentCategories.APPOINTMENT_CALL) intentSummary = "It seems you're interested in making a phone call for an appointment.";
           else if (classifiedIntent === IntentCategories.MANAGE_CALLS) intentSummary = "It looks like you need assistance with managing phone calls.";
-
           aivaResponseContent = `${intentSummary} Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
           await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
@@ -252,8 +247,8 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
       geminiPrompt = getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent);
       const confirmationResultRaw = await generateGeminiText(geminiPrompt);
-      console.log(`aivaService: Gemini affirmative/negative raw response: "${confirmationResultRaw}" for proposed intent: ${conversationState.lastProposedIntent}`); // Logging
-      const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : null; // Normalize
+      console.log(`aivaService: Gemini affirmative/negative raw response: "${confirmationResultRaw}" for proposed intent: ${conversationState.lastProposedIntent}`);
+      const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : null;
 
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversationState.lastProposedIntent;
@@ -269,46 +264,68 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         aivaResponseContent = "My apologies for misunderstanding. Could you please tell me what you'd like to do then?";
         nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
-      } else { // UNCLEAR or error from Gemini or null
+      } else {
         aivaResponseContent = "Sorry, I didn't quite catch that. Was that a 'yes' or a 'no' regarding my previous question?";
-        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE; // Stay in this state
-        // No need to call updateConversationState if only aivaResponseContent changes and nextState is the same
-        // await updateConversationState(userId, chatId, nextState); // Only if other state fields were changing
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
       }
       break;
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
       geminiPrompt = getPaymentDetailsExtractionPrompt(userMessageContent);
       const extractedDetailsRaw = await generateGeminiText(geminiPrompt);
-      let extractedDetails;
-      try {
-          extractedDetails = extractedDetailsRaw ? JSON.parse(extractedDetailsRaw) : {};
-      } catch (e) {
-          console.error("Failed to parse JSON from Gemini for payment details:", extractedDetailsRaw, e);
-          extractedDetails = {};
+      console.log(`aivaService: Gemini payment details extraction raw response: "${extractedDetailsRaw}"`); // Logging
+      let extractedDetails = {}; // Default to empty object
+      if (extractedDetailsRaw) {
+          try {
+              // Attempt to remove markdown backticks if present
+              const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
+              extractedDetails = JSON.parse(cleanedJsonString);
+              console.log('aivaService: Parsed payment details:', extractedDetails); // Logging
+          } catch (e) {
+              console.error("aivaService: Failed to parse JSON from Gemini for payment details. Raw:", extractedDetailsRaw, "Error:", e.message);
+              // Keep extractedDetails as {}
+          }
       }
 
-      if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
+      // Check for the presence of at least task_description OR reminder_date.
+      // Time is optional.
+      if (extractedDetails && (extractedDetails.task_description || extractedDetails.reminder_date)) {
         const reminderData = {
-            userId, 
-            chatId, 
-            task: extractedDetails.task_description,
-            date: extractedDetails.reminder_date,
+            userId, chatId,
+            task: extractedDetails.task_description || "Not specified", // Provide default if null
+            date: extractedDetails.reminder_date || "Not specified", // Provide default if null
             time: extractedDetails.reminder_time || 'any time',
-            createdAt: new Date().toISOString(),
-            status: 'pending'
+            createdAt: new Date().toISOString(), status: 'pending'
         };
-        console.log('Extracted reminder details:', reminderData);
+        console.log('aivaService: Processed reminder data for storage:', reminderData);
 
-        aivaResponseContent = `Alright, I've set a reminder for "${extractedDetails.task_description}" on ${extractedDetails.reminder_date}`;
-        if(extractedDetails.reminder_time) aivaResponseContent += ` at ${extractedDetails.reminder_time}`;
-        aivaResponseContent += `. Is there anything else I can help you with?`;
-        nextState = ConversationStates.AWAITING_USER_REQUEST;
+        // Construct confirmation message carefully
+        let confirmationMsg = "Alright, I've set a reminder";
+        if (reminderData.task !== "Not specified") {
+            confirmationMsg += ` for "${reminderData.task}"`;
+        }
+        if (reminderData.date !== "Not specified") {
+            confirmationMsg += ` on ${reminderData.date}`;
+        }
+        if (extractedDetails.reminder_time) { // Only add time if explicitly extracted
+            confirmationMsg += ` at ${extractedDetails.reminder_time}`;
+        }
+        confirmationMsg += (reminderData.task === "Not specified" && reminderData.date === "Not specified")
+                         ? ". I couldn't get the task or date, though. Could you clarify?"
+                         : ".";
+
+        if (reminderData.task === "Not specified" || reminderData.date === "Not specified") {
+             aivaResponseContent = `${confirmationMsg} I missed some details. Can you provide the full task, date, and time again clearly?`;
+             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT; // Ask again for clarity
+        } else {
+            aivaResponseContent = `${confirmationMsg} Is there anything else I can help you with?`;
+            nextState = ConversationStates.AWAITING_USER_REQUEST;
+        }
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, extractedPaymentDetailsPath: reminderData });
       } else {
         aivaResponseContent = "I couldn't quite get all the details for the reminder. Could you please tell me again: what is the payment for, and when do you need the reminder (date and optionally time)?";
-        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-        await updateConversationState(userId, chatId, nextState);
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT; // Stay in this state
+        // No need to call updateConversationState if only aivaResponseContent changes and nextState is the same
       }
       break;
 
@@ -326,7 +343,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   return {
     aivaResponse: aivaResponseContent,
     currentState: nextState,
-    chatId: chatId, 
+    chatId: chatId,
     userId: userId
   };
 }
