@@ -8,6 +8,9 @@ import  {authMiddleware} from '../middleware/authMiddleware.js'; // Assuming you
 // Protected route, requires authentication
 router.post('/chats', authMiddleware, aivaController.performCreateNewAivaChat);
 
+router.get('/chats', authMiddleware, aivaController.listUserAivaChats);
+
+
 // Send a message to an existing chat session
 // We'll expect chatId in the request body for this one to keep URL simpler
 router.post('/chats/interact', authMiddleware, aivaController.handleAivaChatInteraction);

@@ -1,5 +1,5 @@
 // src/controllers/aivaController.js
-import * as aivaService from '../services/aivaServices.js'
+import * as aivaService from '../services/aivaServices.js' // Assuming ESM, ensure aivaServices.js uses export
 
 export async function performCreateNewAivaChat(req, res) {
   try {
@@ -7,9 +7,8 @@ export async function performCreateNewAivaChat(req, res) {
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated.' });
     }
-    // chatName could optionally come from req.body if you want to allow naming
     const newChatData = await aivaService.createNewChat(userId, "New Chat");
-    return res.status(201).json(newChatData); // 201 Created
+    return res.status(201).json(newChatData);
   } catch (error) {
     console.error('Error in performCreateNewAivaChat controller:', error);
     return res.status(500).json({ error: 'Failed to create new chat.' });
@@ -23,7 +22,7 @@ export async function handleAivaChatInteraction(req, res) {
       return res.status(401).json({ error: 'User not authenticated.' });
     }
 
-    const { chatId, message } = req.body; // Expect chatId in the body now
+    const { chatId, message } = req.body;
 
     if (!chatId) {
         return res.status(400).json({ error: 'chatId is required.' });
@@ -50,17 +49,30 @@ export async function performDeleteAivaChat(req, res) {
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated.' });
     }
-    const { chatId } = req.params; // Get chatId from URL parameters
+    const { chatId } = req.params;
     if (!chatId) {
       return res.status(400).json({ error: 'Chat ID is required in URL path.' });
     }
 
     await aivaService.deleteChat(userId, chatId);
-    return res.status(200).json({ message: `Chat ${chatId} deleted successfully.` }); // Or 204 No Content
+    return res.status(200).json({ message: `Chat ${chatId} deleted successfully.` });
   } catch (error) {
     console.error('Error in performDeleteAivaChat controller:', error);
-    // Check if error is due to chat not found, could return 404
     return res.status(500).json({ error: 'Failed to delete chat.' });
   }
 }
 
+// New function to list chats
+export async function listUserAivaChats(req, res) {
+  try {
+    const userId = req.user?.id || req.user?.uid;
+    if (!userId) {
+      return res.status(401).json({ error: 'User not authenticated.' });
+    }
+    const chats = await aivaService.listUserChats(userId); // We'll create this service function next
+    return res.status(200).json({ chats }); // Send as { chats: [...] } to match frontend expectation
+  } catch (error) {
+    console.error('Error in listUserAivaChats controller:', error);
+    return res.status(500).json({ error: 'Failed to retrieve chats.' });
+  }
+}
