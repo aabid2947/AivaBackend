@@ -7,6 +7,7 @@ import admin from 'firebase-admin';
 
 let firebaseAdminInitialized = false;
 
+let db;
 export const initFirebaseAdmin = () => {
   if (firebaseAdminInitialized) {
     return; // Already initialized
@@ -30,6 +31,7 @@ export const initFirebaseAdmin = () => {
       credential: admin.credential.cert(serviceAccount),
       // databaseURL: "https://<YOUR_PROJECT_ID>.firebaseio.com" // Uncomment and update if using Realtime Database
     });
+    db = admin.firestore();
     firebaseAdminInitialized = true;
     console.log('Firebase Admin SDK initialized successfully.');
   } catch (error) {
@@ -40,7 +42,10 @@ export const initFirebaseAdmin = () => {
   }
 };
 
+
+
+
 // Export Firebase services instances
 export const getFirebaseAuth = () => admin.auth();
 export const getFirestore = () => admin.firestore(); // Export Firestore if needed
-export { admin };
+export { admin, db};

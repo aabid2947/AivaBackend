@@ -10,6 +10,7 @@ import reminderRoutes from './src/routes/reminderRoutes.js'; // For payment remi
 import emailRoutes from './src/routes/emailRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js';
 import callRoutes from './src/routes/callRoutes.js';
+import  aivaRoutes from './src/routes/aivaRoutes.js';
 
 const app = express(); //
 const PORT = process.env.PORT || 5000; //
@@ -30,6 +31,15 @@ app.use('/api/reminders', reminderRoutes);
 app.use('/api/email-tasks', emailRoutes); // Changed path for clarity
 app.use('/api/appointments', appointmentRoutes);
 app.use('/api/call-tasks', callRoutes); // Changed path for clarity
+
+app.use('/api/aiva', aivaRoutes);
+
+
+// Basic error handler (optional, can be more sophisticated)
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
+});
 
 // Basic health check route
 app.get('/api/health', (req, res) => { //
