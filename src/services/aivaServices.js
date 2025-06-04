@@ -1,6 +1,6 @@
 // src/services/aivaService.js
-import { db } from '../config/firebaseAdmin.js';
-import { generateGeminiText } from '../utils/geminiClient.js';
+import { db } from '../config/firebaseAdmin.js'; // Ensure this path is correct for your ESM setup
+import { generateGeminiText } from '../utils/geminiClient.js'; // Ensure this path is correct for your ESM setup
 import { v4 as uuidv4 } from 'uuid';
 
 export const AIVA_INITIAL_GREETING = "Hi there! I'm Aiva, your personal AI assistant. I'm here to simplify your day by helping with receiving and replying to phone calls, managing your emails, assisting with booking appointments, and even helping you remind about payments. What can I do for you today?";
@@ -14,8 +14,6 @@ export const ConversationStates = {
   AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT: 'AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT',
   CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK'
 };
-
-
 
 const IntentCategories = {
   MONITOR_EMAIL: 'MONITOR_EMAIL',
@@ -107,6 +105,46 @@ export async function deleteChat(userId, chatId) {
   await chatRef.delete();
   console.log(`aivaService: Chat ${chatId} deleted successfully for user ${userId}.`);
   return { message: `Chat ${chatId} deleted successfully.` };
+}
+
+// Corrected service function to list user's chats
+export async function listUserChats(userId) {
+  if (!db) {
+    console.error('aivaService: Database not initialized in listUserChats.');
+    throw new Error('Database not initialized.');
+  }
+  if (!userId) {
+    console.error('aivaService: userId not provided to listUserChats.');
+    throw new Error('User ID is required to list chats.');
+  }
+
+  try {
+    const chatsRef = db.collection('users').doc(userId).collection('aivaChats');
+    const snapshot = await chatsRef.orderBy('createdAt', 'desc').get();
+
+    if (snapshot.empty) {
+      console.log(`aivaService: No chats found for user ${userId}.`);
+      return []; // Return empty array if no chats
+    }
+
+    const chats = [];
+    snapshot.forEach(doc => {
+      const data = doc.data();
+      chats.push({
+        id: doc.id, // or data.chatId, ensure consistency
+        name: data.chatName || "Chat", // Fallback name
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt,
+        // Optionally, add a snippet of the last message here for UI
+        // This would require an additional query or denormalization.
+      });
+    });
+    console.log(`aivaService: Found ${chats.length} chats for user ${userId}.`);
+    return chats; // Return the array of chat objects
+  } catch (error) {
+    console.error(`aivaService: Error fetching chats for user ${userId}:`, error);
+    throw error; // Re-throw the error to be handled by the controller
+  }
 }
 
 // --- Modified Core Conversation Functions ---
@@ -273,50 +311,35 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
       geminiPrompt = getPaymentDetailsExtractionPrompt(userMessageContent);
       const extractedDetailsRaw = await generateGeminiText(geminiPrompt);
-      console.log(`aivaService: Gemini payment details extraction raw response: "${extractedDetailsRaw}"`); // Logging
-      let extractedDetails = {}; // Default to empty object
+      console.log(`aivaService: Gemini payment details extraction raw response: "${extractedDetailsRaw}"`);
+      let extractedDetails = {};
       if (extractedDetailsRaw) {
           try {
-              // Attempt to remove markdown backticks if present
               const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
               extractedDetails = JSON.parse(cleanedJsonString);
-              console.log('aivaService: Parsed payment details:', extractedDetails); // Logging
+              console.log('aivaService: Parsed payment details:', extractedDetails);
           } catch (e) {
               console.error("aivaService: Failed to parse JSON from Gemini for payment details. Raw:", extractedDetailsRaw, "Error:", e.message);
-              // Keep extractedDetails as {}
           }
       }
-
-      // Check for the presence of at least task_description OR reminder_date.
-      // Time is optional.
       if (extractedDetails && (extractedDetails.task_description || extractedDetails.reminder_date)) {
         const reminderData = {
             userId, chatId,
-            task: extractedDetails.task_description || "Not specified", // Provide default if null
-            date: extractedDetails.reminder_date || "Not specified", // Provide default if null
+            task: extractedDetails.task_description || "Not specified",
+            date: extractedDetails.reminder_date || "Not specified",
             time: extractedDetails.reminder_time || 'any time',
             createdAt: new Date().toISOString(), status: 'pending'
         };
         console.log('aivaService: Processed reminder data for storage:', reminderData);
-
-        // Construct confirmation message carefully
         let confirmationMsg = "Alright, I've set a reminder";
-        if (reminderData.task !== "Not specified") {
-            confirmationMsg += ` for "${reminderData.task}"`;
-        }
-        if (reminderData.date !== "Not specified") {
-            confirmationMsg += ` on ${reminderData.date}`;
-        }
-        if (extractedDetails.reminder_time) { // Only add time if explicitly extracted
-            confirmationMsg += ` at ${extractedDetails.reminder_time}`;
-        }
+        if (reminderData.task !== "Not specified") { confirmationMsg += ` for "${reminderData.task}"`; }
+        if (reminderData.date !== "Not specified") { confirmationMsg += ` on ${reminderData.date}`; }
+        if (extractedDetails.reminder_time) { confirmationMsg += ` at ${extractedDetails.reminder_time}`; }
         confirmationMsg += (reminderData.task === "Not specified" && reminderData.date === "Not specified")
-                         ? ". I couldn't get the task or date, though. Could you clarify?"
-                         : ".";
-
+                         ? ". I couldn't get the task or date, though. Could you clarify?" : ".";
         if (reminderData.task === "Not specified" || reminderData.date === "Not specified") {
              aivaResponseContent = `${confirmationMsg} I missed some details. Can you provide the full task, date, and time again clearly?`;
-             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT; // Ask again for clarity
+             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
         } else {
             aivaResponseContent = `${confirmationMsg} Is there anything else I can help you with?`;
             nextState = ConversationStates.AWAITING_USER_REQUEST;
@@ -324,8 +347,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, extractedPaymentDetailsPath: reminderData });
       } else {
         aivaResponseContent = "I couldn't quite get all the details for the reminder. Could you please tell me again: what is the payment for, and when do you need the reminder (date and optionally time)?";
-        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT; // Stay in this state
-        // No need to call updateConversationState if only aivaResponseContent changes and nextState is the same
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
       }
       break;
 
@@ -335,16 +357,17 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       nextState = ConversationStates.AWAITING_USER_REQUEST;
       await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
   }
-
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
   await db.collection('users').doc(userId).collection('aivaChats').doc(chatId)
           .update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
-
   return {
-    aivaResponse: aivaResponseContent,
-    currentState: nextState,
-    chatId: chatId,
-    userId: userId
+    aivaResponse: aivaResponseContent, currentState: nextState,
+    chatId: chatId, userId: userId
   };
 }
 
+// Ensure all functions you want to be available to the controller are exported
+// If using CommonJS, this would be module.exports = { ... }
+// For ES Modules, ensure each function is prefixed with 'export' or listed in an export statement.
+// The functions createNewChat, deleteChat, getChatHistory, handleUserMessage, listUserChats
+// AIVA_INITIAL_GREETING, and ConversationStates are already exported.
