@@ -10,9 +10,11 @@ export const ConversationStates = {
   AWAITING_INTENT_CONFIRMATION: 'AWAITING_INTENT_CONFIRMATION',
   AWAITING_AFFIRMATIVE_NEGATIVE: 'AWAITING_AFFIRMATIVE_NEGATIVE',
   PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT',
-  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT',
+  PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT: 'PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_EXTRACT', // This state seems unused in the switch, might be legacy or for future
   AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT: 'AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT',
-  CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK'
+  CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK',
+  PROMPT_EMAIL_MONITORING_PREFERENCES: 'PROMPT_EMAIL_MONITORING_PREFERENCES',
+  PROCESSING_EMAIL_MONITORING_PREFERENCES: 'PROCESSING_EMAIL_MONITORING_PREFERENCES',
 };
 
 const IntentCategories = {
@@ -107,7 +109,6 @@ export async function deleteChat(userId, chatId) {
   return { message: `Chat ${chatId} deleted successfully.` };
 }
 
-// Corrected service function to list user's chats
 export async function listUserChats(userId) {
   if (!db) {
     console.error('aivaService: Database not initialized in listUserChats.');
@@ -124,26 +125,24 @@ export async function listUserChats(userId) {
 
     if (snapshot.empty) {
       console.log(`aivaService: No chats found for user ${userId}.`);
-      return []; // Return empty array if no chats
+      return [];
     }
 
     const chats = [];
     snapshot.forEach(doc => {
       const data = doc.data();
       chats.push({
-        id: doc.id, // or data.chatId, ensure consistency
-        name: data.chatName || "Chat", // Fallback name
+        id: doc.id,
+        name: data.chatName || "Chat",
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
-        // Optionally, add a snippet of the last message here for UI
-        // This would require an additional query or denormalization.
       });
     });
     console.log(`aivaService: Found ${chats.length} chats for user ${userId}.`);
-    return chats; // Return the array of chat objects
+    return chats;
   } catch (error) {
     console.error(`aivaService: Error fetching chats for user ${userId}:`, error);
-    throw error; // Re-throw the error to be handled by the controller
+    throw error;
   }
 }
 
@@ -232,7 +231,21 @@ If the user's message doesn't seem to contain any of these specific details or i
 Ensure the output is ONLY the JSON object.`;
 }
 
+function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
+  return `The user has confirmed they want help with email monitoring.
+Aiva asked: "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?"
+User's reply: "${userMessage}"
+
+Classify this reply into one of the following preferences:
+1. ${EmailMonitoringPreferences.NOTIFY_ONLY} (if the user only wants notifications, alerts, or to be informed about important emails)
+2. ${EmailMonitoringPreferences.ASSIST_REPLY} (if the user wants help with replying, drafting emails, or responding)
+3. ${EmailMonitoringPreferences.BOTH} (if the user explicitly mentions wanting both notifications and help with replies)
+4. ${EmailMonitoringPreferences.UNCLEAR} (if the user's response is ambiguous, doesn't answer the question, or asks another question)
+
+Return ONLY the preference label (e.g., "${EmailMonitoringPreferences.NOTIFY_ONLY}").`;
+}
 // --- Main Service Logic ---
+
 export async function handleUserMessage(userId, chatId, userMessageContent) {
   if (!db) throw new Error('Database not initialized.');
   if (!chatId) throw new Error('chatId is required to handle user message.');
@@ -251,10 +264,14 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   let aivaResponseContent = "I'm not sure how to respond to that right now.";
   let nextState = conversationState.currentState;
   let geminiPrompt = null;
+  let additionalResponseParams = {}; // To hold params like initiateOAuth
 
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
+      // ... (existing logic for initial intent classification)
+      // This part remains largely the same.
+      // When classifiedIntent is MONITOR_EMAIL and user confirms, it goes to AWAITING_AFFIRMATIVE_NEGATIVE.
       geminiPrompt = getInitialIntentClassificationPrompt(userMessageContent);
       const classifiedIntentRaw = await generateGeminiText(geminiPrompt);
       console.log(`aivaService: Gemini intent classification raw response: "${classifiedIntentRaw}"`);
@@ -293,6 +310,10 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
           aivaResponseContent = "Great! To set up the payment reminder, I'll need a bit more information. What is the payment for, when do you need to be reminded, and is there a specific time?";
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
+          // **NEW FLOW FOR EMAIL MONITORING**
+          aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+          nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
         } else {
           aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet). What's the next step?`;
           nextState = ConversationStates.AWAITING_USER_REQUEST;
@@ -300,15 +321,43 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         await updateConversationState(userId, chatId, nextState, { lastUserAffirmation: userMessageContent });
       } else if (confirmationResult === 'NEGATIVE') {
         aivaResponseContent = "My apologies for misunderstanding. Could you please tell me what you'd like to do then?";
-        nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
+        nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT; // Goes back to initial intent classification
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
-      } else {
+      } else { // UNCLEAR
         aivaResponseContent = "Sorry, I didn't quite catch that. Was that a 'yes' or a 'no' regarding my previous question?";
-        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE; // Stays in this state
+        // No change to lastProposedIntent, it remains for the next attempt
+      }
+      break;
+
+    // **NEW CASE for when Aiva has asked about email monitoring preferences and is waiting for the user's reply**
+    case ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES:
+      geminiPrompt = getEmailMonitoringPreferenceClassificationPrompt(userMessageContent);
+      const preferenceRaw = await generateGeminiText(geminiPrompt);
+      console.log(`aivaService: Gemini email preference classification raw response: "${preferenceRaw}"`);
+      const preference = preferenceRaw ? preferenceRaw.trim().toUpperCase() : EmailMonitoringPreferences.UNCLEAR;
+
+      if (preference === EmailMonitoringPreferences.NOTIFY_ONLY || preference === EmailMonitoringPreferences.ASSIST_REPLY || preference === EmailMonitoringPreferences.BOTH) {
+        let preferenceText = "just notifying you of important emails";
+        if (preference === EmailMonitoringPreferences.ASSIST_REPLY) preferenceText = "notifying you and assisting with replies";
+        if (preference === EmailMonitoringPreferences.BOTH) preferenceText = "notifying you and assisting with replies";
+
+        aivaResponseContent = `Got it. I'll proceed with ${preferenceText}. To do this, I'll need access to your emails. Please follow the prompt from the application to connect your email account.`;
+        additionalResponseParams.initiateOAuth = 'google_email'; // Signal for frontend
+        nextState = ConversationStates.AWAITING_USER_REQUEST; // Or a specific post-OAuth pending state
+        await updateConversationState(userId, chatId, nextState, { emailMonitoringPreference: preference, lastProposedIntent: null });
+      } else { // UNCLEAR preference
+        aivaResponseContent = "Sorry, I didn't quite understand your preference for email monitoring. Would you like me to (1) only notify you of important emails, or (2) also help draft replies to some of them? Please specify 'notify only' or 'help reply'.";
+        nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Re-ask
+        // Keep lastProposedIntent as MONITOR_EMAIL implicitly by not clearing it or by ensuring the state update reflects it.
+        // For PROMPT_EMAIL_MONITORING_PREFERENCES, the context is implicitly MONITOR_EMAIL.
+        await updateConversationState(userId, chatId, nextState); // No need to update lastProposedIntent as we're in a sub-flow of it.
       }
       break;
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
+      // ... (existing logic for payment reminders)
+      // This part remains the same.
       geminiPrompt = getPaymentDetailsExtractionPrompt(userMessageContent);
       const extractedDetailsRaw = await generateGeminiText(geminiPrompt);
       console.log(`aivaService: Gemini payment details extraction raw response: "${extractedDetailsRaw}"`);
@@ -323,31 +372,45 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           }
       }
       if (extractedDetails && (extractedDetails.task_description || extractedDetails.reminder_date)) {
-        const reminderData = {
-            userId, chatId,
-            task: extractedDetails.task_description || "Not specified",
-            date: extractedDetails.reminder_date || "Not specified",
-            time: extractedDetails.reminder_time || 'any time',
-            createdAt: new Date().toISOString(), status: 'pending'
+        const reminderDataToStore = {
+            userId,
+            taskDescription: extractedDetails.task_description || "Not specified",
+            reminderDate: extractedDetails.reminder_date || "Not specified",
+            reminderTime: extractedDetails.reminder_time || 'any time',
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
         };
-        console.log('aivaService: Processed reminder data for storage:', reminderData);
+        console.log('aivaService: Processed reminder data for storage:', reminderDataToStore);
         let confirmationMsg = "Alright, I've set a reminder";
-        if (reminderData.task !== "Not specified") { confirmationMsg += ` for "${reminderData.task}"`; }
-        if (reminderData.date !== "Not specified") { confirmationMsg += ` on ${reminderData.date}`; }
+        if (reminderDataToStore.taskDescription !== "Not specified") { confirmationMsg += ` for "${reminderDataToStore.taskDescription}"`; }
+        if (reminderDataToStore.reminderDate !== "Not specified") { confirmationMsg += ` on ${reminderDataToStore.reminderDate}`; }
         if (extractedDetails.reminder_time) { confirmationMsg += ` at ${extractedDetails.reminder_time}`; }
-        confirmationMsg += (reminderData.task === "Not specified" && reminderData.date === "Not specified")
+        confirmationMsg += (reminderDataToStore.taskDescription === "Not specified" && reminderDataToStore.reminderDate === "Not specified")
                          ? ". I couldn't get the task or date, though. Could you clarify?" : ".";
-        if (reminderData.task === "Not specified" || reminderData.date === "Not specified") {
+
+        if (reminderDataToStore.taskDescription === "Not specified" || reminderDataToStore.reminderDate === "Not specified") {
              aivaResponseContent = `${confirmationMsg} I missed some details. Can you provide the full task, date, and time again clearly?`;
              nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+             await updateConversationState(userId, chatId, nextState, { lastProposedIntent: IntentCategories.PAYMENT_REMINDER }); // Keep intent
         } else {
-            aivaResponseContent = `${confirmationMsg} Is there anything else I can help you with?`;
-            nextState = ConversationStates.AWAITING_USER_REQUEST;
+            try {
+                const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
+                console.log(`aivaService: Payment reminder stored with ID: ${reminderRef.id} for user ${userId}`);
+                aivaResponseContent = `${confirmationMsg} Is there anything else I can help you with?`;
+                nextState = ConversationStates.AWAITING_USER_REQUEST;
+                await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, lastReminderId: reminderRef.id });
+            } catch (error) {
+                console.error(`aivaService: Failed to store payment reminder for user ${userId}:`, error);
+                aivaResponseContent = "I was able to understand the details, but there was an issue saving your reminder. Please try again in a moment.";
+                nextState = ConversationStates.AWAITING_USER_REQUEST;
+                await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+            }
         }
-        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, extractedPaymentDetailsPath: reminderData });
       } else {
         aivaResponseContent = "I couldn't quite get all the details for the reminder. Could you please tell me again: what is the payment for, and when do you need the reminder (date and optionally time)?";
         nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: IntentCategories.PAYMENT_REMINDER }); // Keep intent
       }
       break;
 
@@ -357,17 +420,27 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       nextState = ConversationStates.AWAITING_USER_REQUEST;
       await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
   }
+
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
   await db.collection('users').doc(userId).collection('aivaChats').doc(chatId)
           .update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
+
   return {
-    aivaResponse: aivaResponseContent, currentState: nextState,
-    chatId: chatId, userId: userId
+    aivaResponse: aivaResponseContent,
+    currentState: nextState,
+    chatId: chatId,
+    userId: userId,
+    ...additionalResponseParams // This will add initiateOAuth if set
   };
 }
-
 // Ensure all functions you want to be available to the controller are exported
-// If using CommonJS, this would be module.exports = { ... }
-// For ES Modules, ensure each function is prefixed with 'export' or listed in an export statement.
 // The functions createNewChat, deleteChat, getChatHistory, handleUserMessage, listUserChats
 // AIVA_INITIAL_GREETING, and ConversationStates are already exported.
+
+// Define categories for email monitoring preferences
+const EmailMonitoringPreferences = {
+  NOTIFY_ONLY: 'NOTIFY_ONLY',
+  ASSIST_REPLY: 'ASSIST_REPLY', // This can imply notification + reply assistance
+  BOTH: 'BOTH', // Explicitly both, though ASSIST_REPLY might cover it.
+  UNCLEAR: 'UNCLEAR'
+};
