@@ -6,12 +6,9 @@ import { initFirebaseAdmin } from './src/config/firebaseAdmin.js'; // note the .
 import authRoutes from './src/routes/authRoutes.js'; //
 
 // Import new feature routes
-import reminderRoutes from './src/routes/reminderRoutes.js'; // For payment reminders
-import emailRoutes from './src/routes/emailRoutes.js';
-import appointmentRoutes from './src/routes/appointmentRoutes.js';
-import callRoutes from './src/routes/callRoutes.js';
+import reminderRoutes from './src/routes/reminderRoutes.js'; 
 import  aivaRoutes from './src/routes/aivaRoutes.js';
-
+import googleTokenRoutes from './src/routes/googleTokenRoutes.js'; 
 const app = express(); //
 const PORT = process.env.PORT || 5000; //
 
@@ -28,10 +25,7 @@ app.use('/api/auth', authRoutes); //
 // Feature Routes (User Needs Management)
 // These routes will be protected by the authMiddleware defined within their respective route files.
 app.use('/api/reminders', reminderRoutes);
-app.use('/api/email-tasks', emailRoutes); // Changed path for clarity
-app.use('/api/appointments', appointmentRoutes);
-app.use('/api/call-tasks', callRoutes); // Changed path for clarity
-
+app.use('/api/google-tokens', googleTokenRoutes); // Add this
 app.use('/api/aiva', aivaRoutes);
 
 

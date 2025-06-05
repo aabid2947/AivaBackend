@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "server.js"
     }
+  ],
+    "crons": [
+    {
+      "path": "/src/cron/process-emails",
+      "schedule": "*/10 * * * *"
+    }
   ]
 }
