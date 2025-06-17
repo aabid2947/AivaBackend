@@ -14,13 +14,16 @@ export const ConversationStates = {
   CONVERSATION_ENDED_OR_COMPLETED_TASK: 'CONVERSATION_ENDED_OR_COMPLETED_TASK',
   PROMPT_EMAIL_MONITORING_PREFERENCES: 'PROMPT_EMAIL_MONITORING_PREFERENCES',
   PROCESSING_EMAIL_MONITORING_PREFERENCES: 'PROCESSING_EMAIL_MONITORING_PREFERENCES',
+  // New State for Summarization
+  AWAITING_CONTENT_FOR_SUMMARY: 'AWAITING_CONTENT_FOR_SUMMARY',
 };
 
 const IntentCategories = {
   MONITOR_EMAIL: 'MONITOR_EMAIL',
   PAYMENT_REMINDER: 'PAYMENT_REMINDER',
   APPOINTMENT_CALL: 'APPOINTMENT_CALL',
-  MANAGE_CALLS: 'MANAGE_CALLS',
+  // Replaced MANAGE_CALLS with SUMMARIZE_CONTENT
+  SUMMARIZE_CONTENT: 'SUMMARIZE_CONTENT',
   CONVERSATIONAL_QUERY: 'CONVERSATIONAL_QUERY',
   NONE_OF_THE_ABOVE: 'NONE_OF_THE_ABOVE',
   OUT_OF_CONTEXT: 'OUT_OF_CONTEXT'
@@ -242,7 +245,7 @@ Classify this message into one of the following intents:
 1. ${IntentCategories.MONITOR_EMAIL}
 2. ${IntentCategories.PAYMENT_REMINDER}
 3. ${IntentCategories.APPOINTMENT_CALL}
-4. ${IntentCategories.MANAGE_CALLS}
+4. ${IntentCategories.SUMMARIZE_CONTENT}
 5. ${IntentCategories.CONVERSATIONAL_QUERY} (a general question about Aiva's abilities or a conversational remark)
 6. ${IntentCategories.NONE_OF_THE_ABOVE}
 7. ${IntentCategories.OUT_OF_CONTEXT}
@@ -281,6 +284,20 @@ Classify this reply into one of the following preferences:
 Return ONLY the preference label.`;
 }
 
+// New Prompt for Summarization
+function getSummarizationPrompt(textContent) {
+  return `Please provide a concise summary and a "TL;DR" (Too Long; Didn't Read) version for the following text.
+
+Text:
+"""
+${textContent}
+"""
+
+Format your response exactly as follows, with no extra text before or after:
+Summary: [Your concise summary here]
+TL;DR: [Your TL;DR here]`;
+}
+
 
 // --- Main Service Logic ---
 export async function handleUserMessage(userId, chatId, userMessageContent) {
@@ -315,7 +332,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           const chatHistory = await getChatHistory(userId, chatId, 10);
           aivaResponseContent = await generateGeminiText(getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
           nextState = ConversationStates.AWAITING_USER_REQUEST;
-      } else if (classifiedIntent && [IntentCategories.MONITOR_EMAIL, IntentCategories.PAYMENT_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.MANAGE_CALLS].includes(classifiedIntent)) {
+      } else if (classifiedIntent && [IntentCategories.MONITOR_EMAIL, IntentCategories.PAYMENT_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(classifiedIntent)) {
           let intentSummary = `It sounds like you want help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
           aivaResponseContent = `${intentSummary}`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
@@ -338,6 +355,9 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
               aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
               nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+          } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
+              aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
+              nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
           } else {
               aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet).`;
               nextState = ConversationStates.AWAITING_USER_REQUEST;
@@ -440,5 +460,34 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     chatId: chatId,
     userId: userId,
     ...additionalResponseParams
+  };
+}
+
+// New function to handle the summarization task directly
+export async function performSummarization(userId, chatId, textToSummarize) {
+  if (!db) throw new Error('Database not initialized.');
+
+  // 1. Add a placeholder message to history for the user's content
+  await addMessageToHistory(userId, chatId, 'user', '[Content provided for summarization]', ConversationStates.AWAITING_CONTENT_FOR_SUMMARY);
+
+  // 2. Generate the summary from Gemini
+  const prompt = getSummarizationPrompt(textToSummarize);
+  const summaryResponse = await generateGeminiText(prompt);
+
+  // 3. Add Aiva's summary to the chat history
+  const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', summaryResponse, ConversationStates.AWAITING_USER_REQUEST);
+  
+  // 4. Update the chat state back to awaiting a new request
+  await updateConversationState(userId, chatId, ConversationStates.AWAITING_USER_REQUEST, { lastProposedIntent: null, lastAivaMessageId: aivaMessageRef.id });
+
+  console.log(`aivaService: Summarization complete for chat ${chatId}.`);
+
+  // 5. Return the response payload
+  return {
+    id: aivaMessageRef.id,
+    aivaResponse: summaryResponse,
+    currentState: ConversationStates.AWAITING_USER_REQUEST,
+    chatId: chatId,
+    userId: userId,
   };
 }

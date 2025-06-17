@@ -11,7 +11,21 @@ const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
+router.get('/debug-check', (req, res) => {
+    // This is a simple secret key to prevent others from accessing this page.
+    // In a real app, you might use a more robust auth method.
+    // if (req.query.secret_key !== 'debug12345') {
+    //     return res.status(403).json({ error: 'Access denied' });
+    // }
 
+    // This will safely show us the variables the server is actually using.
+    res.status(200).json({
+        message: "Live Environment Variable Check",
+        accountSid_In_Use: process.env.TWILIO_ACCOUNT_SID,
+        isAuthToken_Set: !!process.env.TWILIO_AUTH_TOKEN, // We check if it exists, but don't show the secret token.
+        fromNumber_In_Use: process.env.TWILIO_PHONE_NUMBER
+    });
+});
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 
@@ -20,6 +34,7 @@ const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
  */
 async function initiateAppointmentCall({ phoneNumber, name, appointmentDate, reason }) {
   const initialPromptUrl = new URL(`${process.env.SERVER_BASE_URL}/api/twilio/initial-prompt`);
+  console.log(process.env.SERVER_BASE_URL)
   initialPromptUrl.searchParams.append('name', name);
   initialPromptUrl.searchParams.append('appointmentDate', appointmentDate);
   initialPromptUrl.searchParams.append('reason', reason);

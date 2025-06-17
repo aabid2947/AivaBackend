@@ -9,7 +9,8 @@ import authRoutes from './src/routes/authRoutes.js';
 import reminderRoutes from './src/routes/reminderRoutes.js';
 import aivaRoutes from './src/routes/aivaRoutes.js';
 import googleTokenRoutes from './src/routes/googleTokenRoutes.js';
-import twilioRoutes from './src/routes/twilioRoutes.js'; // 1. IMPORT the new Twilio routes
+import twilioRoutes from './src/routes/twilioRoutes.js';
+import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -19,7 +20,8 @@ initFirebaseAdmin();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json()); // For parsing application/json
+app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
 
 // Auth Routes
 app.use('/api/auth', authRoutes);
@@ -28,7 +30,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/reminders', reminderRoutes);
 app.use('/api/google-tokens', googleTokenRoutes);
 app.use('/api/aiva', aivaRoutes);
-app.use('/api/twilio', twilioRoutes); // 2. USE the new Twilio routes under the /api/twilio path
+app.use('/api/twilio', twilioRoutes);
+app.use('/api/audio', audioRoutes); // 2. USE the new audio routes under the /api/audio path
 
 // Basic error handler
 app.use((err, req, res, next) => {

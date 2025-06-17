@@ -1,5 +1,11 @@
 // src/controllers/aivaController.js
 import * as aivaService from '../services/aivaServices.js'; // Corrected filename
+import multer from 'multer';
+
+// Setup multer for memory storage to handle file buffer directly
+const storage = multer.memoryStorage();
+export const upload = multer({ storage: storage });
+
 
 export async function performCreateNewAivaChat(req, res) {
   try {
@@ -42,6 +48,49 @@ export async function handleAivaChatInteraction(req, res) {
     return res.status(500).json({ error: 'An internal server error occurred.' });
   }
 }
+
+// New Controller Function for Summarization
+export async function handleSummarizationRequest(req, res) {
+    try {
+        const userId = req.user?.id || req.user?.uid;
+        if (!userId) {
+            return res.status(401).json({ error: 'User not authenticated.' });
+        }
+
+        const { chatId } = req.params;
+        const { message } = req.body;
+        const file = req.file;
+
+        if (!chatId) {
+            return res.status(400).json({ error: 'Chat ID is required in the URL path.' });
+        }
+
+        let contentToSummarize = '';
+
+        if (file) {
+            // NOTE: This assumes the file is plain text (e.g., .txt).
+            // For other file types like PDF or DOCX, you would need to install and use
+            // additional libraries like 'pdf-parse' or 'mammoth'.
+            console.log(`Summarizing uploaded file: ${file.originalname}`);
+            contentToSummarize = file.buffer.toString('utf-8');
+        } else if (message) {
+            console.log(`Summarizing text message.`);
+            contentToSummarize = message;
+        }
+
+        if (!contentToSummarize) {
+            return res.status(400).json({ error: 'No content provided. Please supply a message or upload a file.' });
+        }
+        
+        const responsePayload = await aivaService.performSummarization(userId, chatId, contentToSummarize);
+        return res.status(200).json(responsePayload);
+
+    } catch (error) {
+        console.error('Error in handleSummarizationRequest controller:', error);
+        return res.status(500).json({ error: 'An internal server error occurred during summarization.' });
+    }
+}
+
 
 export async function performDeleteAivaChat(req, res) {
   try {
