@@ -1,4 +1,5 @@
 // src/services/authService.js
+// This service file task is to handle user login and signup
 import { getFirebaseAuth } from '../config/firebaseAdmin.js';
 
 

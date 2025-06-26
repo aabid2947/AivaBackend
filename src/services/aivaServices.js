@@ -1,9 +1,10 @@
 // src/services/aivaService.js
+// Main servive file for aiva chats
 import { db } from '../config/firebaseAdmin.js';
 import { generateGeminiText } from '../utils/geminiClient.js';
 import { v4 as uuidv4 } from 'uuid';
 
-export const AIVA_INITIAL_GREETING = "Hi there! I'm Aiva, your personal AI assistant. I'm here to simplify your day by helping with receiving and replying to phone calls, managing your emails, assisting with booking appointments, and even helping you remind about payments. What can I do for you today?";
+export const AIVA_INITIAL_GREETING = "Hi there! I'm Aiva, your personal AI assistant. I'm here to simplify your day by helping with receiving and summarizing your files and text, managing your emails, assisting with booking appointments, and even helping you remind about payments. What can I do for you today?";
 
 export const ConversationStates = {
   AWAITING_USER_REQUEST: 'AWAITING_USER_REQUEST',
@@ -31,9 +32,9 @@ const IntentCategories = {
 
 // New classification for user replies within a state
 const ReplyTypes = {
-    DIRECT_ANSWER: 'DIRECT_ANSWER',
-    CONTEXTUAL_QUERY: 'CONTEXTUAL_QUERY', // e.g., "which option is better for my business?"
-    UNRELATED: 'UNRELATED'
+  DIRECT_ANSWER: 'DIRECT_ANSWER',
+  CONTEXTUAL_QUERY: 'CONTEXTUAL_QUERY', // e.g., "which option is better for my business?"
+  UNRELATED: 'UNRELATED'
 };
 
 
@@ -102,10 +103,10 @@ export async function createNewChat(userId, chatName = "New Chat") {
     chatId,
     chatName,
     initialMessage: {
-        id: initialMessageRef.id,
-        text: initialMessage.content,
-        sender: 'ai',
-        timestamp: initialMessage.timestamp
+      id: initialMessageRef.id,
+      text: initialMessage.content,
+      sender: 'ai',
+      timestamp: initialMessage.timestamp
     },
     currentState: initialChatState.currentState,
   };
@@ -182,7 +183,7 @@ async function updateConversationState(userId, chatId, newState, updates = {}) {
   console.log(`aivaService: Updated chat state for user ${userId}, chat ${chatId} to ${newState}, updates:`, updates);
 }
 
-async function addMessageToHistory(userId, chatId, role, content, stateWhenSent = null, intentContext = null) {
+export async function addMessageToHistory(userId, chatId, role, content, stateWhenSent = null, intentContext = null) {
   const messageData = {
     userId,
     chatId,
@@ -198,18 +199,18 @@ async function addMessageToHistory(userId, chatId, role, content, stateWhenSent 
 }
 
 export async function getChatHistory(userId, chatId, limit = 20) {
-    const messagesRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages');
-    const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(limit).get();
-    if (snapshot.empty) return [];
-    const history = [];
-    snapshot.forEach(doc => history.push({ id: doc.id, ...doc.data() }));
-    return history.reverse();
+  const messagesRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId).collection('messages');
+  const snapshot = await messagesRef.orderBy('timestamp', 'desc').limit(limit).get();
+  if (snapshot.empty) return [];
+  const history = [];
+  snapshot.forEach(doc => history.push({ id: doc.id, ...doc.data() }));
+  return history.reverse();
 }
 
 // --- Prompts ---
 
 function getReplyTypeClassificationPrompt(aivaQuestion, userReply) {
-    return `An AI assistant, Aiva, asked a user a question to get a specific choice.
+  return `An AI assistant, Aiva, asked a user a question to get a specific choice.
     Aiva's question: "${aivaQuestion}"
     User's reply: "${userReply}"
 
@@ -222,8 +223,8 @@ function getReplyTypeClassificationPrompt(aivaQuestion, userReply) {
 }
 
 function getContextualGuidancePrompt(chatHistory, aivaQuestion, userQuery) {
-    const historyString = chatHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n');
-    return `You are Aiva, a helpful AI assistant. You asked the user a question to proceed with a task, but they replied with a contextual question of their own instead of a direct answer.
+  const historyString = chatHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n');
+  return `You are Aiva, a helpful AI assistant. You asked the user a question to proceed with a task, but they replied with a contextual question of their own instead of a direct answer.
     Your Goal: Provide a helpful, smart response to the user's question, and then gently guide them back to answering your original question.
 
     Conversation History:
@@ -260,16 +261,7 @@ Is this reply affirmative (e.g., yes, confirm, correct, sounds good) or negative
 Return "AFFIRMATIVE" or "NEGATIVE". If it's unclear or neither, return "UNCLEAR".`;
 }
 
-function getPaymentDetailsExtractionPrompt(userMessage) {
-  return `The user wants to set a payment reminder and has provided some details.
-User's message: "${userMessage}"
-Extract the following information:
-- "task_description"
-- "reminder_date"
-- "reminder_time"
-Return this information as a VALID JSON object. If a piece of information is not found, use null for its value.
-Ensure the output is ONLY the JSON object.`;
-}
+
 
 function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
   return `The user has confirmed they want help with email monitoring.
@@ -298,6 +290,29 @@ Summary: [Your concise summary here]
 TL;DR: [Your TL;DR here]`;
 }
 
+// --- UPDATED: Smarter prompt for payment details ---
+function getPaymentDetailsExtractionPrompt(userMessage) {
+  return `The user wants to set a payment reminder. Extract the following information from their message:
+    - "task_description": A brief description of what the reminder is for.
+    - "reminder_date": The date in YYYY-MM-DD format.
+    - "reminder_time": The time in 24-hour HH:MM:SS format.
+
+    User's message: "${userMessage}"
+
+    Analyze the message carefully. Today's date is ${new Date().toDateString()}. If the user says "tomorrow", calculate the correct date. Convert all times to a 24-hour format (e.g., 10:55 p.m. becomes 22:55:00).
+
+    Return this information as a VALID JSON object. If a piece of information is not found, use null for its value.
+    Example Input: "remind me about school fees tomorrow at 10:55 p.m."
+    Example Output:
+    {
+      "task_description": "school fees",
+      "reminder_date": "2025-06-27",
+      "reminder_time": "22:55:00"
+    }
+
+    Ensure the output is ONLY the JSON object.`;
+}
+
 
 // --- Main Service Logic ---
 export async function handleUserMessage(userId, chatId, userMessageContent) {
@@ -308,9 +323,9 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   if (!conversationState) {
     console.error(`handleUserMessage: No conversation state found for userId ${userId}, chatId ${chatId}.`);
     return {
-        id: null,
-        aivaResponse: "Sorry, I couldn't find our current conversation. Please try starting a new chat.",
-        currentState: null, chatId: chatId, userId: userId, error: "Conversation not found"
+      id: null,
+      aivaResponse: "Sorry, I couldn't find our current conversation. Please try starting a new chat.",
+      currentState: null, chatId: chatId, userId: userId, error: "Conversation not found"
     };
   }
 
@@ -329,17 +344,17 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       const classifiedIntentRaw = await generateGeminiText(getInitialIntentClassificationPrompt(userMessageContent));
       const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
       if (classifiedIntent === IntentCategories.CONVERSATIONAL_QUERY) {
-          const chatHistory = await getChatHistory(userId, chatId, 10);
-          aivaResponseContent = await generateGeminiText(getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
-          nextState = ConversationStates.AWAITING_USER_REQUEST;
+        const chatHistory = await getChatHistory(userId, chatId, 10);
+        aivaResponseContent = await generateGeminiText(getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
       } else if (classifiedIntent && [IntentCategories.MONITOR_EMAIL, IntentCategories.PAYMENT_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(classifiedIntent)) {
-          let intentSummary = `It sounds like you want help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
-          aivaResponseContent = `${intentSummary}`;
-          nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
-          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
+        let intentSummary = `It sounds like you want help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
+        aivaResponseContent = `${intentSummary}`;
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
       } else {
-          aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, and managing calls. How can I assist you with one of these tasks?";
-          nextState = ConversationStates.AWAITING_USER_REQUEST;
+        aivaResponseContent = "I see. I can primarily help with email monitoring, payment reminders, and managing calls. How can I assist you with one of these tasks?";
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
       }
       break;
 
@@ -348,100 +363,115 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       const confirmationResultRaw = await generateGeminiText(getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent));
       const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : 'UNCLEAR';
       if (confirmationResult === 'AFFIRMATIVE') {
-          const confirmedIntent = conversationState.lastProposedIntent;
-          if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
-              aivaResponseContent = "Great! What is the payment for, and when do you need to be reminded?";
-              nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-          } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
-              aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
-              nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
-          } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
-              aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
-              nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
-          } else {
-              aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet).`;
-              nextState = ConversationStates.AWAITING_USER_REQUEST;
-          }
-          await updateConversationState(userId, chatId, nextState);
+        const confirmedIntent = conversationState.lastProposedIntent;
+        if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
+          aivaResponseContent = "Great! What is the payment for, and when do you need to be reminded?";
+          nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
+          aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+          nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+        } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
+          aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
+          nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
+        } else {
+          aivaResponseContent = `Okay, we'll proceed with ${confirmedIntent.toLowerCase().replace(/_/g, ' ')}. (Path not fully implemented yet).`;
+          nextState = ConversationStates.AWAITING_USER_REQUEST;
+        }
+        await updateConversationState(userId, chatId, nextState);
       } else {
-          aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
-          nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
-          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+        aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
+        nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
       }
       break;
-    
+
     case ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES:
       const aivaQuestion = "Would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+      console.log(aivaQuestion)
       const replyTypeRaw = await generateGeminiText(getReplyTypeClassificationPrompt(aivaQuestion, userMessageContent));
       const replyType = replyTypeRaw ? replyTypeRaw.trim().toUpperCase() : ReplyTypes.CONTEXTUAL_QUERY;
 
       console.log(`aivaService: Reply type classified as: ${replyType}`);
 
       if (replyType === ReplyTypes.DIRECT_ANSWER) {
-          // User gave a direct answer, proceed with existing logic
-          const preferenceRaw = await generateGeminiText(getEmailMonitoringPreferenceClassificationPrompt(userMessageContent));
-          const preference = preferenceRaw ? preferenceRaw.trim().toUpperCase() : EmailMonitoringPreferences.UNCLEAR;
+        // User gave a direct answer, proceed with existing logic
+        const preferenceRaw = await generateGeminiText(getEmailMonitoringPreferenceClassificationPrompt(userMessageContent));
+        const preference = preferenceRaw ? preferenceRaw.trim().toUpperCase() : EmailMonitoringPreferences.UNCLEAR;
 
-          if ([EmailMonitoringPreferences.NOTIFY_ONLY, EmailMonitoringPreferences.ASSIST_REPLY, EmailMonitoringPreferences.BOTH].includes(preference)) {
-              let preferenceForStorage = preference === EmailMonitoringPreferences.BOTH ? EmailMonitoringPreferences.ASSIST_REPLY : preference;
-              let preferenceText = preferenceForStorage === EmailMonitoringPreferences.ASSIST_REPLY ? "notifying you and assisting with replies" : "just notifying you of important emails";
+        if ([EmailMonitoringPreferences.NOTIFY_ONLY, EmailMonitoringPreferences.ASSIST_REPLY, EmailMonitoringPreferences.BOTH].includes(preference)) {
+          let preferenceForStorage = preference === EmailMonitoringPreferences.BOTH ? EmailMonitoringPreferences.ASSIST_REPLY : preference;
+          let preferenceText = preferenceForStorage === EmailMonitoringPreferences.ASSIST_REPLY ? "notifying you and assisting with replies" : "just notifying you of important emails";
 
-              aivaResponseContent = `Got it. I'll proceed with ${preferenceText}. To do this, I'll need access to your emails. Please follow the prompt from the application to connect your email account.`;
-              additionalResponseParams.initiateOAuth = 'google_email';
-              nextState = ConversationStates.AWAITING_USER_REQUEST;
+          aivaResponseContent = `Got it. I'll proceed with ${preferenceText}. To do this, I'll need access to your emails. Please follow the prompt from the application to connect your email account.`;
+          additionalResponseParams.initiateOAuth = 'google_email';
+          nextState = ConversationStates.AWAITING_USER_REQUEST;
 
-              await db.collection('users').doc(userId).set({ settings: { emailMonitoringPreference: preferenceForStorage } }, { merge: true });
-              await updateConversationState(userId, chatId, nextState, { emailMonitoringChatPreference: preferenceForStorage, lastProposedIntent: null });
-          } else {
-              aivaResponseContent = "Sorry, I didn't quite understand. Could you please specify 'notify only' or 'help reply'?";
-              nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Re-ask
-          }
-      } else if (replyType === ReplyTypes.CONTEXTUAL_QUERY) {
-          // User asked a related question. Generate a smart response.
-          console.log("Handling contextual query for email preferences...");
-          const chatHistory = await getChatHistory(userId, chatId, 10);
-          const guidancePrompt = getContextualGuidancePrompt(chatHistory, aivaQuestion, userMessageContent);
-          aivaResponseContent = await generateGeminiText(guidancePrompt);
-          nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Remain in this state to await their choice
-          // We don't update the state in the DB here, just return the helpful message
-      } else { // UNRELATED
-          // Handle unrelated tangent, maybe check for intent change or redirect.
-          aivaResponseContent = "I see. Let's focus on the email monitoring first. Would you like me to just notify you, or also help with replies?";
+          await db.collection('users').doc(userId).set({ settings: { emailMonitoringPreference: preferenceForStorage } }, { merge: true });
+          await updateConversationState(userId, chatId, nextState, { emailMonitoringChatPreference: preferenceForStorage, lastProposedIntent: null });
+        } else {
+          aivaResponseContent = "Sorry, I didn't quite understand. Could you please specify 'notify only' or 'help reply'?";
           nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Re-ask
+        }
+      } else if (replyType === ReplyTypes.CONTEXTUAL_QUERY) {
+        // User asked a related question. Generate a smart response.
+        console.log("Handling contextual query for email preferences...");
+        const chatHistory = await getChatHistory(userId, chatId, 10);
+        const guidancePrompt = getContextualGuidancePrompt(chatHistory, aivaQuestion, userMessageContent);
+        aivaResponseContent = await generateGeminiText(guidancePrompt);
+        nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Remain in this state to await their choice
+        // We don't update the state in the DB here, just return the helpful message
+      } else { // UNRELATED
+        // Handle unrelated tangent, maybe check for intent change or redirect.
+        aivaResponseContent = "I see. Let's focus on the email monitoring first. Would you like me to just notify you, or also help with replies?";
+        nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES; // Re-ask
       }
       break;
 
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
-      // This logic can also be enhanced with reply type classification if needed, but is kept simple for now.
       const extractedDetailsRaw = await generateGeminiText(getPaymentDetailsExtractionPrompt(userMessageContent));
       let extractedDetails = {};
       try {
-          const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
-          extractedDetails = JSON.parse(cleanedJsonString);
+        const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
+        extractedDetails = JSON.parse(cleanedJsonString);
       } catch (e) {
-          console.error("Failed to parse payment details JSON:", e.message);
+        console.error("Failed to parse payment details JSON:", e, extractedDetailsRaw);
+        extractedDetails = {}; // Reset on failure
       }
 
+      // --- UPDATED: More robust date and time handling ---
       if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
-        const reminderDataToStore = {
-            userId,
-            taskDescription: extractedDetails.task_description,
-            reminderDate: extractedDetails.reminder_date,
-            reminderTime: extractedDetails.reminder_time || 'any time',
-            status: 'pending',
-            createdAt: new Date().toISOString()
-        };
-        const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
-        aivaResponseContent = `Okay, I've set a reminder for "${reminderDataToStore.taskDescription}" on ${reminderDataToStore.reminderDate}. Anything else?`;
-        nextState = ConversationStates.AWAITING_USER_REQUEST;
-        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, lastReminderId: reminderRef.id });
+        // Combine the extracted date and time into a full ISO string
+        // If time is missing, default to a reasonable time like 09:00:00
+        const timePart = extractedDetails.reminder_time || '09:00:00';
+        const isoString = `${extractedDetails.reminder_date}T${timePart}`;
+        const reminderDateTime = new Date(isoString);
+
+        // Check if the resulting date is valid
+        if (isNaN(reminderDateTime.getTime())) {
+            console.error("Invalid date created:", isoString);
+            aivaResponseContent = "I couldn't quite understand that date and time. Could you please provide it again? For example: 'tomorrow at 5pm' or 'July 25th at 9am'.";
+            nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        } else {
+            const reminderDataToStore = {
+                userId,
+                taskDescription: extractedDetails.task_description,
+                reminderDateTime: reminderDateTime, // Store the valid Date object
+                status: 'pending',
+                createdAt: new Date(),
+                chatId: chatId
+            };
+            const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
+            aivaResponseContent = `Okay, I've set a reminder for "${reminderDataToStore.taskDescription}" on ${reminderDataToStore.reminderDateTime.toLocaleString()}. Is there anything else?`;
+            nextState = ConversationStates.AWAITING_USER_REQUEST;
+            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, lastReminderId: reminderRef.id });
+        }
       } else {
         aivaResponseContent = "I missed some details. Could you please provide the full task, date, and time again clearly?";
         nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
       }
       break;
-
+    
     default:
       console.warn(`Unhandled conversation state: ${conversationState.currentState}`);
       aivaResponseContent = "I seem to be a bit lost. Could we start over?";
@@ -451,7 +481,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
   await db.collection('users').doc(userId).collection('aivaChats').doc(chatId)
-          .update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
+    .update({ lastAivaMessageId: aivaMessageRef.id, updatedAt: new Date().toISOString() });
 
   return {
     id: aivaMessageRef.id,
@@ -476,7 +506,7 @@ export async function performSummarization(userId, chatId, textToSummarize) {
 
   // 3. Add Aiva's summary to the chat history
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', summaryResponse, ConversationStates.AWAITING_USER_REQUEST);
-  
+
   // 4. Update the chat state back to awaiting a new request
   await updateConversationState(userId, chatId, ConversationStates.AWAITING_USER_REQUEST, { lastProposedIntent: null, lastAivaMessageId: aivaMessageRef.id });
 

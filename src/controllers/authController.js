@@ -16,7 +16,7 @@ export const authController = {
       if (!email || !password) {
         return res.status(400).json({ message: 'Email and password are required.' });
       }
-
+      console.log(req)
       // 1. Create user in Firebase Authentication
       const userRecord = await authService.createUser(email, password);
 

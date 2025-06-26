@@ -113,6 +113,7 @@ export async function performDeleteAivaChat(req, res) {
 
 export async function listUserAivaChats(req, res) {
   try {
+    console.log("called")
     const userId = req.user?.id || req.user?.uid;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated.' });
@@ -128,6 +129,8 @@ export async function listUserAivaChats(req, res) {
 // New function to get messages for a specific chat
 export async function getAivaChatMessages(req, res) {
   try {
+    console.log("called")
+
     const userId = req.user?.id || req.user?.uid;
     if (!userId) {
       return res.status(401).json({ error: 'User not authenticated.' });

@@ -1,4 +1,5 @@
 // src/services/googleTokenService.js
+// Thsi file is used as a service to store google auth token after oAuth 
 import { db } from '../config/firebaseAdmin.js';
 import { FieldValue } from 'firebase-admin/firestore';
 
@@ -15,14 +16,20 @@ export async function storeUserGoogleTokens(userId, tokenData) {
   if (!userId || !tokenData || !tokenData.accessToken) {
     throw new Error('User ID and valid token data (including accessToken) are required.');
   }
-  const { accessToken, refreshToken, expiresIn, scope, idToken } = tokenData; // idToken might be useful for user email
-
+  
+  const { accessToken, refreshToken, expiresAt, scope, idToken } = tokenData; // idToken might be useful for user email
+  console.log(tokenData)
   const tokensRef = db.collection(USER_COLLECTION).doc(userId).collection(GOOGLE_TOKENS_SUBCOLLECTION).doc('default'); // Using 'default' as doc ID for simplicity
+
+  const expiresIn =
+    typeof expiresAt === 'number'
+      ? Math.floor((expiresAt - Date.now()) / 1000)
+      : undefined;
 
   const dataToStore = {
     accessToken,
     refreshToken, // Crucial for long-term access
-    expiresIn, // Duration in seconds
+    ...(expiresIn != null && { expiresIn }),
     grantedAt: FieldValue.serverTimestamp(),
     scope, // Store the scopes granted
     updatedAt: FieldValue.serverTimestamp(),

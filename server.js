@@ -4,14 +4,15 @@ import express from 'express';
 import cors from 'cors';
 import { initFirebaseAdmin } from './src/config/firebaseAdmin.js';
 import authRoutes from './src/routes/authRoutes.js';
-
 // Import feature routes
 import reminderRoutes from './src/routes/reminderRoutes.js';
+import morgan from 'morgan';
 import aivaRoutes from './src/routes/aivaRoutes.js';
 import googleTokenRoutes from './src/routes/googleTokenRoutes.js';
 import twilioRoutes from './src/routes/twilioRoutes.js';
 import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
-
+import './src/cron/emailScheduler.js';
+import './src/cron/reminderScheduler.js'
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -22,6 +23,7 @@ initFirebaseAdmin();
 app.use(cors());
 app.use(express.json()); // For parsing application/json
 app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
+app.use(morgan('tiny'));
 
 // Auth Routes
 app.use('/api/auth', authRoutes);
