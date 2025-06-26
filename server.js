@@ -40,7 +40,7 @@ app.use((err, req, res, next) => {
 console.error(err.stack);
 res.status(500).send('Something broke\!');
 });
-console.log(process.env.GEMINI_API_KEY)
+
 // Basic health check route
 app.get('/api/health', (req, res) => {
 res.status(200).json({ status: 'ok', message: 'AIVA API is running\!' });

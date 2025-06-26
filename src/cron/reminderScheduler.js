@@ -9,6 +9,7 @@ console.log('Reminder Scheduler initialized.');
 // Schedule the cron job to run every minute.
 cron.schedule('* * * * *', async () => {
   console.log('----------------------------------------------------');
+  console.log(process.env.GEMINI_API_KEY)
   console.log(`[${new Date().toISOString()}] Running scheduled reminder check...`);
   
   try {
