@@ -291,6 +291,7 @@ TL;DR: [Your TL;DR here]`;
 }
 
 // --- UPDATED: Smarter prompt for payment details ---
+// --- UPDATED: More robust prompt for payment details ---
 function getPaymentDetailsExtractionPrompt(userMessage) {
   return `The user wants to set a payment reminder. Extract the following information from their message:
     - "task_description": A brief description of what the reminder is for.
@@ -299,19 +300,23 @@ function getPaymentDetailsExtractionPrompt(userMessage) {
 
     User's message: "${userMessage}"
 
-    Analyze the message carefully. Today's date is ${new Date().toDateString()}. If the user says "tomorrow", calculate the correct date. Convert all times to a 24-hour format (e.g., 10:55 p.m. becomes 22:55:00).
+    Analyze the message carefully. Today's date is ${new Date().toDateString()}.
+    - If the user says "tomorrow", calculate the correct date.
+    - Convert all times to a 24-hour format (e.g., 10:55 p.m. becomes 22:55:00, 3:10 becomes 03:10:00 unless context suggests p.m.).
+    - If the time is ambiguous (e.g., just "at 3"), assume the user means the next upcoming 3 o'clock (AM or PM).
 
-    Return this information as a VALID JSON object. If a piece of information is not found, use null for its value.
-    Example Input: "remind me about school fees tomorrow at 10:55 p.m."
+    Return this information as a VALID JSON object. If the date or time information is truly missing or impossible to understand, use null for its value.
+    Example Input: "remind me about the hospital bill at 3:10"
     Example Output:
     {
-      "task_description": "school fees",
+      "task_description": "hospital bill",
       "reminder_date": "2025-06-27",
-      "reminder_time": "22:55:00"
+      "reminder_time": "03:10:00"
     }
 
     Ensure the output is ONLY the JSON object.`;
 }
+
 
 
 // --- Main Service Logic ---
@@ -439,24 +444,21 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         extractedDetails = {}; // Reset on failure
       }
 
-      // --- UPDATED: More robust date and time handling ---
-      if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date) {
-        // Combine the extracted date and time into a full ISO string
-        // If time is missing, default to a reasonable time like 09:00:00
-        const timePart = extractedDetails.reminder_time || '09:00:00';
-        const isoString = `${extractedDetails.reminder_date}T${timePart}`;
+      // --- CORRECTED LOGIC: No more faulty fallback ---
+      if (extractedDetails && extractedDetails.task_description && extractedDetails.reminder_date && extractedDetails.reminder_time) {
+        // Only proceed if we have a task, a date, AND a time.
+        const isoString = `${extractedDetails.reminder_date}T${extractedDetails.reminder_time}`;
         const reminderDateTime = new Date(isoString);
 
-        // Check if the resulting date is valid
         if (isNaN(reminderDateTime.getTime())) {
-            console.error("Invalid date created:", isoString);
-            aivaResponseContent = "I couldn't quite understand that date and time. Could you please provide it again? For example: 'tomorrow at 5pm' or 'July 25th at 9am'.";
+            console.error("Invalid date created from AI output:", isoString);
+            aivaResponseContent = "I had trouble understanding that date and time. Could you please provide it again? For example: 'tomorrow at 5pm'.";
             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
         } else {
             const reminderDataToStore = {
                 userId,
                 taskDescription: extractedDetails.task_description,
-                reminderDateTime: reminderDateTime, // Store the valid Date object
+                reminderDateTime: reminderDateTime,
                 status: 'pending',
                 createdAt: new Date(),
                 chatId: chatId
@@ -467,7 +469,8 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, lastReminderId: reminderRef.id });
         }
       } else {
-        aivaResponseContent = "I missed some details. Could you please provide the full task, date, and time again clearly?";
+        // If any detail (task, date, or time) is missing, ask for clarification.
+        aivaResponseContent = "I missed some of the details. Could you please provide the full task, date, and time again clearly?";
         nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
       }
       break;
