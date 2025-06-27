@@ -13,6 +13,7 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 import './src/cron/emailScheduler.js';
 import './src/cron/reminderScheduler.js'
+import mpesaRoutes from './src/routes/mpesaRoutes.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -34,6 +35,7 @@ app.use('/api/google-tokens', googleTokenRoutes);
 app.use('/api/aiva', aivaRoutes);
 app.use('/api/twilio', twilioRoutes);
 app.use('/api/audio', audioRoutes); // 2. USE the new audio routes under the /api/audio path
+app.use('/api/payments/mpesa', mpesaRoutes);
 
 // Basic error handler
 app.use((err, req, res, next) => {
