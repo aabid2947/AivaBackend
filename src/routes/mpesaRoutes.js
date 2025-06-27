@@ -11,6 +11,6 @@ router.post('/stk-push', initiateStkPush);
 // @route   POST /api/payments/mpesa/callback
 // @desc    M-Pesa callback URL for STK push
 // @access  Public
-router.post('/callback', handleCallback);
+router.post('/stk-callback', handleCallback);
 
 export default router;

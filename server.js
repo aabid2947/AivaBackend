@@ -35,7 +35,7 @@ app.use('/api/google-tokens', googleTokenRoutes);
 app.use('/api/aiva', aivaRoutes);
 app.use('/api/twilio', twilioRoutes);
 app.use('/api/audio', audioRoutes); // 2. USE the new audio routes under the /api/audio path
-app.use('/api/payments/mpesa', mpesaRoutes);
+app.use('/api/payments', mpesaRoutes);
 
 // Basic error handler
 app.use((err, req, res, next) => {
