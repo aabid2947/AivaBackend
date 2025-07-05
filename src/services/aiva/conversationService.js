@@ -45,7 +45,24 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // ... same as before
+      const classifiedIntentRaw = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
+      const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
+      
+      console.log(`DEBUG: Classified Intent - ${classifiedIntent}`); // For debugging
+
+      if (classifiedIntent === IntentCategories.CONVERSATIONAL_QUERY) {
+        const chatHistory = await getChatHistory(userId, chatId, 10);
+        aivaResponseContent = await generateGeminiText(Prompts.getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+      } else if (classifiedIntent && [IntentCategories.MONITOR_EMAIL, IntentCategories.SET_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(classifiedIntent)) {
+        let intentSummary = `It sounds like you want help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
+        aivaResponseContent = `${intentSummary}`;
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
+      } else {
+        aivaResponseContent = "I see. I can primarily help with email monitoring, setting reminders, and managing calls. How can I assist you with one of these tasks?";
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+      }
       break;
 
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
@@ -55,10 +72,10 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversationState.lastProposedIntent;
         
-        if (confirmedIntent === IntentCategories.PAYMENT_REMINDER) {
-          aivaResponseContent = "Great! What is the payment for, and when do you need to be reminded?";
+        // UPDATED: Changed to use the new, general reminder intent
+        if (confirmedIntent === IntentCategories.SET_REMINDER) {
+          aivaResponseContent = "Great! What should I remind you about?";
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-          // Initialize the reminder details object in the chat state
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_date: null, reminder_time: null } });
         
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
@@ -76,7 +93,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
             await updateConversationState(userId, chatId, nextState);
         }
-        // Other intents...
 
       } else {
         aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
@@ -85,7 +101,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       }
       break;
 
-    // --- UPDATED: New logic for the reminder details state ---
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
         const existingReminderDetails = conversationState.reminderDetails || {};
         const extractedDetailsRaw = await generateGeminiText(Prompts.getPaymentDetailsExtractionPrompt(userMessageContent, existingReminderDetails));
@@ -104,14 +119,12 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const missingReminderDetails = Object.keys(updatedReminderDetails).filter(key => !updatedReminderDetails[key]);
 
         if (missingReminderDetails.length === 0) {
-            // All details collected, create the reminder
             const isoString = `${updatedReminderDetails.reminder_date}T${updatedReminderDetails.reminder_time}`;
             const reminderDateTime = new Date(isoString);
 
             if (isNaN(reminderDateTime.getTime())) {
                 aivaResponseContent = "I had trouble understanding that date and time. Could you please provide it again? For example: 'tomorrow at 5pm'.";
                 nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-                // Clear the invalid date/time to re-ask
                 updatedReminderDetails.reminder_date = null;
                 updatedReminderDetails.reminder_time = null;
                 await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
@@ -130,7 +143,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
                 await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, reminderDetails: {}, lastReminderId: reminderRef.id });
             }
         } else {
-            // Ask for the next missing detail
             let followupQuestion = "Thanks. ";
             if (missingReminderDetails.includes('task_description')) {
                 followupQuestion += "What should I remind you about?";
@@ -144,10 +156,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
             await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
         }
-        break;
-
-    case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
-        // ... same as before
         break;
 
     // other cases...
