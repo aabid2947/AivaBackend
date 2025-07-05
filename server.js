@@ -5,15 +5,16 @@ import cors from 'cors';
 import { initFirebaseAdmin } from './src/config/firebaseAdmin.js';
 import authRoutes from './src/routes/authRoutes.js';
 // Import feature routes
-import reminderRoutes from './src/routes/reminderRoutes.js';
+// import reminderRoutes from './src/routes/reminderRoutes.js';
 import morgan from 'morgan';
 import aivaRoutes from './src/routes/aivaRoutes.js';
 import googleTokenRoutes from './src/routes/googleTokenRoutes.js';
 import twilioRoutes from './src/routes/twilioRoutes.js';
-import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
+// import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 import './src/cron/emailScheduler.js';
 import './src/cron/reminderScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
+import appointmentRoutes from './src/routes/appointmentRoutes.js'
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -30,12 +31,14 @@ app.use(morgan('tiny'));
 app.use('/api/auth', authRoutes);
 
 // Feature Routes
-app.use('/api/reminders', reminderRoutes);
+// app.use('/api/reminders', reminderRoutes);
 app.use('/api/google-tokens', googleTokenRoutes);
 app.use('/api/aiva', aivaRoutes);
 app.use('/api/twilio', twilioRoutes);
-app.use('/api/audio', audioRoutes); // 2. USE the new audio routes under the /api/audio path
+// app.use('/api/audio', audioRoutes); // 2. USE the new audio routes under the /api/audio path
 app.use('/api/payments', mpesaRoutes);
+// --- NEW ---
+app.use('/api/appointments', appointmentRoutes); // Use appointment routes
 
 // Basic error handler
 app.use((err, req, res, next) => {

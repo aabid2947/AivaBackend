@@ -10,16 +10,15 @@ if (!GEMINI_API_KEY) {
 
 const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
 
+// This model is multimodal and can handle both text and vision
 const modelConfig = {
-  // Adjust model name as needed, e.g., 'gemini-1.5-flash-latest' or 'gemini-pro'
-  modelName: 'gemini-1.5-flash-latest', // Using a common capable model
+  modelName: 'gemini-1.5-flash-latest',
   generationConfig: {
-    temperature: 0.7, // Adjust for creativity vs. determinism
+    temperature: 0.7,
     topK: 1,
     topP: 1,
-    maxOutputTokens: 2048, // Adjust as needed
+    maxOutputTokens: 2048,
   },
-  // Safety settings - adjust as per your application's needs
   safetySettings: [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE },
@@ -29,7 +28,23 @@ const modelConfig = {
 };
 
 /**
- * Generates content using the Gemini API.
+ * Converts a file buffer to a Gemini-compatible FileData part.
+ * @param {Buffer} buffer The file buffer.
+ * @param {string} mimeType The MIME type of the file.
+ * @returns {{inlineData: {data: string, mimeType: string}}}
+ */
+function fileToGenerativePart(buffer, mimeType) {
+  return {
+    inlineData: {
+      data: buffer.toString("base64"),
+      mimeType
+    },
+  };
+}
+
+
+/**
+ * Generates content using the Gemini API for text-only prompts.
  * @param {string} prompt The prompt to send to Gemini.
  * @param {Array<{role: string, parts: Array<{text: string}>}>} history Optional chat history.
  * @returns {Promise<string|null>} The generated text or null if an error occurs.
@@ -39,16 +54,12 @@ export async function generateGeminiText(prompt, history = []) {
     console.error('Gemini API key not configured. Cannot generate text.');
     return null;
   }
-  if (!GEMINI_API_KEY) { // Redundant check, but good for safety
-      console.error('Gemini API key is missing.');
-      return null;
-  }
 
   try {
     const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
     
     const chatParts = [
-        ...history, // Spread existing history if any
+        ...history,
         { role: "user", parts: [{ text: prompt }] }
     ];
 
@@ -58,22 +69,47 @@ export async function generateGeminiText(prompt, history = []) {
         safetySettings: modelConfig.safetySettings,
     });
 
-    if (result && result.response && result.response.candidates && result.response.candidates.length > 0) {
-      const candidate = result.response.candidates[0];
-      if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
-        return candidate.content.parts.map(part => part.text).join('');
-      }
+    if (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        return result.response.candidates[0].content.parts.map(part => part.text).join('');
     }
-    console.warn('Gemini API returned no content or unexpected structure:', result);
-    return null; // Or a default message like "I'm having trouble understanding."
+    
+    console.warn('Gemini API (text) returned no content or unexpected structure:', result);
+    return "I'm having a little trouble thinking right now. Could you try rephrasing?";
   } catch (error) {
-    console.error('Error calling Gemini API:', error.message);
-    // Log more details if available, e.g., error.response.data
-    if (error.response && error.response.data) {
-        console.error('Gemini API Error Details:', error.response.data);
-    }
-    return null; // Or throw error to be handled by caller
+    console.error('Error calling Gemini API (text):', error.message);
+    return null;
   }
 }
 
+/**
+ * Generates content using the Gemini API for prompts that include an image.
+ * @param {string} prompt The text part of the prompt.
+ * @param {Buffer} imageBuffer The buffer of the image file.
+ * @param {string} imageMimeType The MIME type of the image.
+ * @returns {Promise<string|null>} The generated text or null if an error occurs.
+ */
+export async function generateGeminiVisionResponse(prompt, imageBuffer, imageMimeType) {
+    if (!genAI) {
+        console.error('Gemini API key not configured. Cannot generate vision response.');
+        return null;
+    }
 
+    try {
+        // The same model can handle multimodal inputs
+        const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
+
+        const imagePart = fileToGenerativePart(imageBuffer, imageMimeType);
+
+        const result = await model.generateContent([prompt, imagePart]);
+        
+        if (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
+            return result.response.candidates[0].content.parts.map(part => part.text).join('');
+        }
+
+        console.warn('Gemini API (vision) returned no content or unexpected structure:', result);
+        return "I'm having trouble analyzing the image. Please try again with a different one.";
+    } catch (error) {
+        console.error('Error calling Gemini API (vision):', error.message);
+        return null;
+    }
+}
