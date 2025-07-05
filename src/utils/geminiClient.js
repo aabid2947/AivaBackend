@@ -113,3 +113,33 @@ export async function generateGeminiVisionResponse(prompt, imageBuffer, imageMim
         return null;
     }
 }
+
+
+
+
+// --- NEW FUNCTION for Audio Transcription ---
+export async function generateGeminiAudioTranscription(audioBuffer, audioMimeType) {
+    if (!genAI) {
+        console.error('Gemini API key not configured. Cannot transcribe audio.');
+        return null;
+    }
+
+    try {
+        const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
+        const audioPart = fileToGenerativePart(audioBuffer, audioMimeType);
+
+        // For transcription, you often just need to provide the audio and a simple prompt.
+        const prompt = "Transcribe the following audio recording accurately.";
+
+        const result = await model.generateContent([prompt, audioPart]);
+        const response = await result.response;
+        const text = response.text();
+        
+        console.log(`Gemini Transcription: ${text}`);
+        return text;
+
+    } catch (error) {
+        console.error('Error calling Gemini API (audio):', error.message);
+        return null;
+    }
+}
