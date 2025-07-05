@@ -45,14 +45,61 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // This logic remains the same
+      // --- FIXED: Restored the missing intent classification logic ---
+      const classifiedIntentRaw = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
+      const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
+      
+      if (classifiedIntent === IntentCategories.CONVERSATIONAL_QUERY) {
+        const chatHistory = await getChatHistory(userId, chatId, 10);
+        aivaResponseContent = await generateGeminiText(Prompts.getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+      } else if (classifiedIntent && [IntentCategories.MONITOR_EMAIL, IntentCategories.SET_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(classifiedIntent)) {
+        let intentSummary = `It sounds like you want help with ${classifiedIntent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
+        aivaResponseContent = `${intentSummary}`;
+        nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: classifiedIntent });
+      } else {
+        aivaResponseContent = "I see. I can primarily help with email monitoring, setting reminders, and managing calls. How can I assist you with one of these tasks?";
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+      }
       break;
 
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
-      // This logic remains the same
+      // --- FIXED: Restored the missing confirmation handling logic ---
+      const confirmationResultRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent));
+      const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : 'UNCLEAR';
+      
+      if (confirmationResult === 'AFFIRMATIVE') {
+        const confirmedIntent = conversationState.lastProposedIntent;
+        
+        if (confirmedIntent === IntentCategories.SET_REMINDER) {
+          aivaResponseContent = "Great! What should I remind you about?";
+          nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+          await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
+        
+        } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
+          aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name and contact info (phone/email) of the person the appointment is for?";
+          nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { patientName: null, patientContact: null, bookingContactNumber: null, reasonForAppointment: null, preferredCallTime: null } });
+        
+        } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
+            aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
+            nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
+            await updateConversationState(userId, chatId, nextState);
+        
+        } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
+            aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+            nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+            await updateConversationState(userId, chatId, nextState);
+        }
+
+      } else {
+        aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
+        nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+      }
       break;
 
-    // --- UPDATED: Reminder processing logic ---
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
         const existingReminderDetails = conversationState.reminderDetails || {};
         const extractedDetailsRaw = await generateGeminiText(Prompts.getPaymentDetailsExtractionPrompt(userMessageContent, existingReminderDetails));
@@ -71,17 +118,14 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const missingReminderDetails = Object.keys(updatedReminderDetails).filter(key => !updatedReminderDetails[key]);
 
         if (missingReminderDetails.length === 0) {
-            // Now we have a full ISO string with offset, which creates a correct Date object
             const reminderDateTime = new Date(updatedReminderDetails.reminder_iso_string_with_offset);
 
             if (isNaN(reminderDateTime.getTime())) {
                 aivaResponseContent = "I had trouble understanding that date and time. Could you please provide it again? For example: 'tomorrow at 5pm'.";
                 nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-                // Clear the invalid detail to re-ask
                 updatedReminderDetails.reminder_iso_string_with_offset = null;
                 await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
             } else {
-                // Display the time in the user's local timezone for confirmation
                 aivaResponseContent = `Okay, I have the following details for your reminder: For "${updatedReminderDetails.task_description}" on ${reminderDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
                 nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
                 await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
@@ -106,13 +150,12 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
         if (reminderConfirmation === 'AFFIRMATIVE') {
             const finalReminderDetails = conversationState.reminderDetails;
-            // The Date object created from the full ISO string is now correct
             const reminderDateTime = new Date(finalReminderDetails.reminder_iso_string_with_offset);
 
             const reminderDataToStore = {
                 userId,
                 taskDescription: finalReminderDetails.task_description,
-                reminderDateTime: reminderDateTime, // This is now the correct UTC time
+                reminderDateTime: reminderDateTime,
                 status: 'pending',
                 createdAt: new Date(),
                 chatId: chatId
@@ -128,7 +171,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         }
         break;
 
-    // Other cases remain the same...
+    // Other cases for appointments, etc., remain the same...
   }
 
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
