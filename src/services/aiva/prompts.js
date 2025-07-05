@@ -1,35 +1,34 @@
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
 
-// --- UPDATED: Improved the initial intent classification prompt ---
-export function getInitialIntentClassificationPrompt(userMessage) {
-  return `Analyze the user's message to determine their primary intent. Classify it into one of the following categories:
+// --- UPDATED: This prompt now requests a full ISO string with the UTC offset ---
+export function getPaymentDetailsExtractionPrompt(userMessage, existingDetails) {
+  const detailsString = JSON.stringify(existingDetails, null, 2);
+  return `An AI assistant is helping a user set a reminder. It needs to collect:
+- "task_description": A brief description of what the reminder is for.
+- "reminder_iso_string_with_offset": The full date and time for the reminder as a single ISO 8601 string including the timezone offset.
 
-- **${IntentCategories.MONITOR_EMAIL}**: User wants help with managing, reading, or replying to emails.
-  (Examples: "check my emails", "can you handle my inbox?", "reply to the latest message from John")
+The assistant has already collected some information:
+${detailsString}
 
-- **${IntentCategories.SET_REMINDER}**: User wants to be reminded about something. This includes any kind of reminder, not just for payments.
-  (Examples: "set a reminder", "remind me to call the doctor", "don't let me forget the meeting tomorrow at 10")
+The user just sent a new message: "${userMessage}"
 
-- **${IntentCategories.APPOINTMENT_CALL}**: User wants the AI to make a phone call to book an appointment.
-  (Examples: "book a dentist appointment", "can you call my mechanic?", "schedule a haircut for me")
+Analyze the new message to extract or update the details.
+- Today's date is ${new Date().toDateString()}.
+- The user is in the IST (India Standard Time, UTC+5:30) timezone. When they say "6:45 PM", it means 18:45 in their local time.
+- Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+05:30".
 
-- **${IntentCategories.SUMMARIZE_CONTENT}**: User wants to summarize a text, file, or image.
-  (Examples: "summarize this for me", "give me the TL;DR", "what does this document say?")
-
-- **${IntentCategories.CONVERSATIONAL_QUERY}**: A general question about Aiva's abilities, a greeting, or a conversational remark that doesn't fit other categories.
-  (Examples: "hi", "what can you do?", "that's cool")
-
-- **${IntentCategories.NONE_OF_THE_ABOVE}**: The user has a clear request, but it does not fall into any of the categories above.
-
-- **${IntentCategories.OUT_OF_CONTEXT}**: The user's message is random, nonsensical, or completely unrelated to the assistant's purpose.
-
-User message: "${userMessage}"
-
-Return ONLY the intent label (e.g., "${IntentCategories.SET_REMINDER}").`;
+Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
+Example Output:
+{
+  "task_description": "Pay college fees",
+  "reminder_iso_string_with_offset": "2025-07-05T18:45:00+05:30"
 }
 
+Ensure the output is ONLY the JSON object.`;
+}
 
+// Other prompts remain unchanged
 export function getSummarizationPrompt(textContent) {
   return `Please provide a concise summary and a "TL;DR" (Too Long; Didn't Read) version for the following text.
 
@@ -50,35 +49,6 @@ export function getVisionSummarizationPrompt() {
     Summary: [Your concise summary here]`;
 }
 
-export function getPaymentDetailsExtractionPrompt(userMessage, existingDetails) {
-  const detailsString = JSON.stringify(existingDetails, null, 2);
-  return `An AI assistant is helping a user set a payment reminder. It needs to collect:
-- "task_description": A brief description of what the reminder is for.
-- "reminder_date": The date for the reminder in YYYY-MM-DD format.
-- "reminder_time": The time for the reminder in 24-hour HH:MM:SS format.
-
-The assistant has already collected some information:
-${detailsString}
-
-The user just sent a new message: "${userMessage}"
-
-Analyze the new message and update the collected information. Today's date is ${new Date().toDateString()}.
-- If the user says "tomorrow", calculate the correct date.
-- Convert all times to a 24-hour format (e.g., 10:55 p.m. becomes 22:55:00).
-- If a detail is still missing, its value should be null.
-
-Return a VALID JSON object containing all the details collected so far.
-Example Output:
-{
-  "task_description": "hospital bill",
-  "reminder_date": "2025-07-06",
-  "reminder_time": "15:10:00"
-}
-
-Ensure the output is ONLY the JSON object.`;
-}
-
-// Other prompts remain unchanged...
 export function getReplyTypeClassificationPrompt(aivaQuestion, userReply) {
   return `An AI assistant, Aiva, asked a user a question to get a specific choice.
     Aiva's question: "${aivaQuestion}"
@@ -101,6 +71,19 @@ export function getContextualGuidancePrompt(chatHistory, aivaQuestion, userQuery
     The User's Contextual Question:
     "${userQuery}"
     Generate a response that helps the user and encourages them to make a choice.`;
+}
+
+export function getInitialIntentClassificationPrompt(userMessage) {
+  return `Analyze the user's message to determine their primary intent. Classify it into one of the following categories:
+- **${IntentCategories.MONITOR_EMAIL}**: User wants help with managing, reading, or replying to emails.
+- **${IntentCategories.SET_REMINDER}**: User wants to be reminded about something. This includes any kind of reminder, not just for payments.
+- **${IntentCategories.APPOINTMENT_CALL}**: User wants the AI to make a phone call to book an appointment.
+- **${IntentCategories.SUMMARIZE_CONTENT}**: User wants to summarize a text, file, or image.
+- **${IntentCategories.CONVERSATIONAL_QUERY}**: A general question about Aiva's abilities, a greeting, or a conversational remark that doesn't fit other categories.
+- **${IntentCategories.NONE_OF_THE_ABOVE}**: The user has a clear request, but it does not fall into any of the categories above.
+- **${IntentCategories.OUT_OF_CONTEXT}**: The user's message is random, nonsensical, or completely unrelated to the assistant's purpose.
+User message: "${userMessage}"
+Return ONLY the intent label (e.g., "${IntentCategories.SET_REMINDER}").`;
 }
 
 export function getAffirmativeNegativeClassificationPrompt(userReply, proposedIntentSummary) {
