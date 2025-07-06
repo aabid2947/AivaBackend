@@ -1,7 +1,7 @@
 // src/services/aiva/conversation.service.js
 import { db } from '../../config/firebaseAdmin.js';
 import { generateGeminiText } from '../../utils/geminiClient.js';
-import { getChatHistory, addMessageToHistory } from './chat.service.js';
+import { getChatHistory, addMessageToHistory } from './chatService.js';
 import * as Prompts from './prompts.js';
 import { ConversationStates, IntentCategories } from './constants.js';
 
