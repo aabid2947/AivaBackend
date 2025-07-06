@@ -1,7 +1,7 @@
 // src/services/aiva/conversation.service.js
 import { db } from '../../config/firebaseAdmin.js';
 import { generateGeminiText } from '../../utils/geminiClient.js';
-import { getChatHistory, addMessageToHistory } from './chatService.js';
+import { getChatHistory, addMessageToHistory } from './chat.service.js';
 import * as Prompts from './prompts.js';
 import { ConversationStates, IntentCategories } from './constants.js';
 
@@ -170,8 +170,70 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             await updateConversationState(userId, chatId, nextState);
         }
         break;
+    
+    case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
+        const existingApptDetails = conversationState.appointmentDetails || {};
+        const extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
+        
+        let updatedApptDetails = {};
+        try {
+            const cleanedJsonString = extractedApptDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
+            updatedApptDetails = JSON.parse(cleanedJsonString);
+        } catch (e) {
+            console.error("Failed to parse appointment details JSON:", e, extractedApptDetailsRaw);
+            aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
+            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+            break;
+        }
 
-    // Other cases for appointments, etc., remain the same...
+        const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key]);
+
+        if (missingApptDetails.length === 0) {
+            aivaResponseContent = `Okay, I'm ready to book. Please confirm the details: For ${updatedApptDetails.patientName}, I will call ${updatedApptDetails.bookingContactNumber} to book an appointment for "${updatedApptDetails.reasonForAppointment}" around ${updatedApptDetails.preferredCallTime}. Is this correct?`;
+            nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
+            await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        } else {
+            let followupQuestion = "Thanks! ";
+             if (missingApptDetails.includes('patientName')) {
+                 followupQuestion += "What is the full name of the person this appointment is for? ";
+            } else if (missingApptDetails.includes('patientContact')) {
+                followupQuestion += "What is the patient's contact number or email? ";
+            } else if (missingApptDetails.includes('bookingContactNumber')) {
+                followupQuestion += "What's the phone number I should call to book the appointment? ";
+            } else if (missingApptDetails.includes('reasonForAppointment')) {
+                followupQuestion += "What is the reason for this appointment? ";
+            } else if (missingApptDetails.includes('preferredCallTime')) {
+                followupQuestion += "And when would be a good time for me to make this call? ";
+            }
+            aivaResponseContent = followupQuestion.trim();
+            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+            await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        }
+        break;
+
+    case ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION:
+        const apptConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the appointment details"));
+        const apptConfirmation = apptConfirmationRaw ? apptConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
+
+        if (apptConfirmation === 'AFFIRMATIVE') {
+            const finalApptDetails = conversationState.appointmentDetails;
+            const appointmentData = {
+                ...finalApptDetails,
+                userId,
+                chatId,
+                status: 'pending',
+                createdAt: new Date().toISOString()
+            };
+            const appointmentRef = await db.collection('users').doc(userId).collection('appointments').add(appointmentData);
+            aivaResponseContent = `Great, I have all the details. I will make the call around the preferred time to book the appointment for ${finalApptDetails.patientName}. I'll let you know how it goes. Is there anything else?`;
+            nextState = ConversationStates.AWAITING_USER_REQUEST;
+            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, appointmentDetails: {}, lastAppointmentId: appointmentRef.id });
+        } else {
+            aivaResponseContent = "My apologies. What would you like to change?";
+            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+            await updateConversationState(userId, chatId, nextState);
+        }
+        break;
   }
 
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
