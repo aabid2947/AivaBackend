@@ -3,7 +3,7 @@ import { db } from '../../config/firebaseAdmin.js';
 import { generateGeminiText } from '../../utils/geminiClient.js';
 import { getChatHistory, addMessageToHistory } from './chatService.js';
 import * as Prompts from './prompts.js';
-import { ConversationStates, IntentCategories } from './constants.js';
+import { ConversationStates, IntentCategories, ReplyTypes, EmailMonitoringPreferences } from './constants.js';
 
 export async function getConversationState(userId, chatId) {
   const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
@@ -45,7 +45,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // --- FIXED: Restored the missing intent classification logic ---
       const classifiedIntentRaw = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
       const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
       
@@ -65,7 +64,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
-      // --- FIXED: Restored the missing confirmation handling logic ---
       const confirmationResultRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent));
       const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : 'UNCLEAR';
       
@@ -97,6 +95,41 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
         nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+      }
+      break;
+
+    // --- ADDED: Missing case for handling email preferences ---
+    case ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES:
+      const aivaQuestion = "Would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+      const replyTypeRaw = await generateGeminiText(Prompts.getReplyTypeClassificationPrompt(aivaQuestion, userMessageContent));
+      const replyType = replyTypeRaw ? replyTypeRaw.trim().toUpperCase() : ReplyTypes.CONTEXTUAL_QUERY;
+
+      if (replyType === ReplyTypes.DIRECT_ANSWER) {
+        const preferenceRaw = await generateGeminiText(Prompts.getEmailMonitoringPreferenceClassificationPrompt(userMessageContent));
+        const preference = preferenceRaw ? preferenceRaw.trim().toUpperCase() : EmailMonitoringPreferences.UNCLEAR;
+
+        if ([EmailMonitoringPreferences.NOTIFY_ONLY, EmailMonitoringPreferences.ASSIST_REPLY, EmailMonitoringPreferences.BOTH].includes(preference)) {
+          let preferenceForStorage = preference === EmailMonitoringPreferences.BOTH ? EmailMonitoringPreferences.ASSIST_REPLY : preference;
+          let preferenceText = preferenceForStorage === EmailMonitoringPreferences.ASSIST_REPLY ? "notifying you and assisting with replies" : "just notifying you of important emails";
+
+          aivaResponseContent = `Got it. I'll proceed with ${preferenceText}. To do this, I'll need access to your emails. Please follow the prompt from the application to connect your email account.`;
+          additionalResponseParams.initiateOAuth = 'google_email';
+          nextState = ConversationStates.AWAITING_USER_REQUEST;
+
+          await db.collection('users').doc(userId).set({ settings: { emailMonitoringPreference: preferenceForStorage } }, { merge: true });
+          await updateConversationState(userId, chatId, nextState, { emailMonitoringChatPreference: preferenceForStorage, lastProposedIntent: null });
+        } else {
+          aivaResponseContent = "Sorry, I didn't quite understand. Could you please specify 'notify only' or 'help reply'?";
+          nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+        }
+      } else if (replyType === ReplyTypes.CONTEXTUAL_QUERY) {
+        const chatHistory = await getChatHistory(userId, chatId, 10);
+        const guidancePrompt = Prompts.getContextualGuidancePrompt(chatHistory, aivaQuestion, userMessageContent);
+        aivaResponseContent = await generateGeminiText(guidancePrompt);
+        nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+      } else { // UNRELATED
+        aivaResponseContent = "I see. Let's focus on the email monitoring first. Would you like me to just notify you, or also help with replies?";
+        nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
       }
       break;
 

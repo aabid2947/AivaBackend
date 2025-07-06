@@ -1,7 +1,23 @@
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
 
-// --- UPDATED: This prompt now requests a full ISO string with the UTC offset ---
+// --- UPDATED: Made this prompt more robust with better examples ---
+export function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
+  return `The user has confirmed they want help with email monitoring.
+Aiva asked: "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?"
+User's reply: "${userMessage}"
+
+Analyze the user's reply and classify it into one of the following preferences:
+- **${EmailMonitoringPreferences.NOTIFY_ONLY}**: The user only wants to be notified. (e.g., "just notify me", "only notifications", "the first option")
+- **${EmailMonitoringPreferences.ASSIST_REPLY}**: The user wants help drafting replies. (e.g., "help me reply", "draft replies", "the second one")
+- **${EmailMonitoringPreferences.BOTH}**: The user wants both notifications and help with replies. (e.g., "both", "do both for me", "send reply is also")
+- **${EmailMonitoringPreferences.UNCLEAR}**: The user's response is ambiguous or doesn't answer the question.
+
+Return ONLY the preference label (e.g., "${EmailMonitoringPreferences.ASSIST_REPLY}").`;
+}
+
+
+// Other prompts remain unchanged
 export function getPaymentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
   return `An AI assistant is helping a user set a reminder. It needs to collect:
@@ -28,7 +44,6 @@ Example Output:
 Ensure the output is ONLY the JSON object.`;
 }
 
-// Other prompts remain unchanged
 export function getSummarizationPrompt(textContent) {
   return `Please provide a concise summary and a "TL;DR" (Too Long; Didn't Read) version for the following text.
 
@@ -91,18 +106,6 @@ export function getAffirmativeNegativeClassificationPrompt(userReply, proposedIn
 User's reply: "${userReply}"
 Is this reply affirmative (e.g., yes, confirm, correct) or negative (e.g., no, wrong, not that)?
 Return "AFFIRMATIVE" or "NEGATIVE". If it's unclear, return "UNCLEAR".`;
-}
-
-export function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
-  return `The user has confirmed they want help with email monitoring.
-Aiva asked: "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?"
-User's reply: "${userMessage}"
-Classify this reply into one of the following preferences:
-1. ${EmailMonitoringPreferences.NOTIFY_ONLY}
-2. ${EmailMonitoringPreferences.ASSIST_REPLY}
-3. ${EmailMonitoringPreferences.BOTH}
-4. ${EmailMonitoringPreferences.UNCLEAR}
-Return ONLY the preference label.`;
 }
 
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
