@@ -1,13 +1,13 @@
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
 
-// --- UPDATED: This prompt now requests a full ISO string for the appointment call time ---
+// --- UPDATED: Added phone number validation and country code instructions ---
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
   return `An AI assistant is helping a user book an appointment. It needs to collect:
 - "patientName": The full name of the person for whom the appointment is.
 - "patientContact": The phone number or email of the patient.
-- "bookingContactNumber": The phone number of the clinic, office, or person to call.
+- "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
 - "reasonForAppointment": The reason for the appointment.
 - "preferredCallTime_iso_string_with_offset": The date and time the user wants the AI to make the call, as a single ISO 8601 string including the timezone offset.
 
@@ -17,9 +17,10 @@ ${detailsString}
 The user just sent a new message: "${userMessage}"
 
 Analyze the new message to extract or update the details.
+- **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID".
 - Today's date is ${new Date().toDateString()}.
 - The user is in the IST (India Standard Time, UTC+5:30) timezone.
-- Convert their local time for the call to a full ISO 8601 string WITH THE UTC OFFSET. For example, "tomorrow at 10 AM" should become a string like "2025-07-08T10:00:00+05:30".
+- Convert their local time for the call to a full ISO 8601 string WITH THE UTC OFFSET.
 
 Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
 Ensure the output is ONLY the JSON object.`;
