@@ -1,19 +1,28 @@
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
 
-// --- UPDATED: Made this prompt more robust with better examples ---
-export function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
-  return `The user has confirmed they want help with email monitoring.
-Aiva asked: "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?"
-User's reply: "${userMessage}"
+// --- UPDATED: This prompt now requests a full ISO string for the appointment call time ---
+export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
+  const detailsString = JSON.stringify(existingDetails, null, 2);
+  return `An AI assistant is helping a user book an appointment. It needs to collect:
+- "patientName": The full name of the person for whom the appointment is.
+- "patientContact": The phone number or email of the patient.
+- "bookingContactNumber": The phone number of the clinic, office, or person to call.
+- "reasonForAppointment": The reason for the appointment.
+- "preferredCallTime_iso_string_with_offset": The date and time the user wants the AI to make the call, as a single ISO 8601 string including the timezone offset.
 
-Analyze the user's reply and classify it into one of the following preferences:
-- **${EmailMonitoringPreferences.NOTIFY_ONLY}**: The user only wants to be notified. (e.g., "just notify me", "only notifications", "the first option")
-- **${EmailMonitoringPreferences.ASSIST_REPLY}**: The user wants help drafting replies. (e.g., "help me reply", "draft replies", "the second one")
-- **${EmailMonitoringPreferences.BOTH}**: The user wants both notifications and help with replies. (e.g., "both", "do both for me", "send reply is also")
-- **${EmailMonitoringPreferences.UNCLEAR}**: The user's response is ambiguous or doesn't answer the question.
+The assistant has already collected some information:
+${detailsString}
 
-Return ONLY the preference label (e.g., "${EmailMonitoringPreferences.ASSIST_REPLY}").`;
+The user just sent a new message: "${userMessage}"
+
+Analyze the new message to extract or update the details.
+- Today's date is ${new Date().toDateString()}.
+- The user is in the IST (India Standard Time, UTC+5:30) timezone.
+- Convert their local time for the call to a full ISO 8601 string WITH THE UTC OFFSET. For example, "tomorrow at 10 AM" should become a string like "2025-07-08T10:00:00+05:30".
+
+Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
+Ensure the output is ONLY the JSON object.`;
 }
 
 
@@ -108,12 +117,14 @@ Is this reply affirmative (e.g., yes, confirm, correct) or negative (e.g., no, w
 Return "AFFIRMATIVE" or "NEGATIVE". If it's unclear, return "UNCLEAR".`;
 }
 
-export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
-  const detailsString = JSON.stringify(existingDetails, null, 2);
-  return `An AI assistant is helping a user book an appointment. It needs: "patientName", "patientContact", "bookingContactNumber", "reasonForAppointment", "preferredCallTime".
-The assistant has already collected:
-${detailsString}
-The user just sent a new message: "${userMessage}"
-Analyze the new message and update the collected information. Return a VALID JSON object containing all details collected so far. If a detail is still missing, its value should be null. Today's date is ${new Date().toDateString()}.
-Ensure the output is ONLY the JSON object.`;
+export function getEmailMonitoringPreferenceClassificationPrompt(userMessage) {
+  return `The user has confirmed they want help with email monitoring.
+Aiva asked: "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?"
+User's reply: "${userMessage}"
+Classify this reply into one of the following preferences:
+1. ${EmailMonitoringPreferences.NOTIFY_ONLY}
+2. ${EmailMonitoringPreferences.ASSIST_REPLY}
+3. ${EmailMonitoringPreferences.BOTH}
+4. ${EmailMonitoringPreferences.UNCLEAR}
+Return ONLY the preference label.`;
 }

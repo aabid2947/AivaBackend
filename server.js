@@ -13,6 +13,7 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 // import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 import './src/cron/emailScheduler.js';
 import './src/cron/reminderScheduler.js'
+import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js'
 const app = express();

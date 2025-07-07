@@ -5,12 +5,13 @@ import * as twilioController from '../controllers/twilioController.js';
 const router = express.Router();
 
 // This is the initial endpoint Twilio calls when the outbound call connects.
-// It starts the conversation.
 router.post('/twiML/appointmentCall', twilioController.generateInitialCallTwiML);
 
 // This is the endpoint Twilio calls after recording the user's response.
-// It processes the recording and decides the next steps.
 router.post('/twiML/handleRecording', twilioController.processCallRecording);
 
+// --- NEW: This endpoint handles status updates for the call ---
+// (e.g., busy, no-answer, completed, or answering machine detection)
+router.post('/twiML/callStatus', twilioController.handleCallStatusUpdate);
 
 export default router;

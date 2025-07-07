@@ -4,7 +4,6 @@ import * as twilioCallService from '../services/twilioCallService.js';
 
 // Controller to generate the initial TwiML for the call
 export async function generateInitialCallTwiML(req, res) {
-    // The appointmentId is passed as a query parameter from the scheduler
     const { appointmentId } = req.query; 
 
     try {
@@ -24,26 +23,33 @@ export async function generateInitialCallTwiML(req, res) {
 // Controller to process the audio recording from the call
 export async function processCallRecording(req, res) {
     const { appointmentId } = req.query;
-    const recordingUrl = req.body.RecordingUrl; // URL of the recorded audio
+    const recordingUrl = req.body.RecordingUrl;
     
     try {
-        // The service will handle downloading, transcribing, and updating the database
         await twilioCallService.handleAppointmentResponse(appointmentId, recordingUrl);
-
-        // After processing, we end the call gracefully.
-        // The response to this webhook should be an empty TwiML response to hang up.
         const twiml = new twilio.twiml.VoiceResponse();
         twiml.hangup();
-
         res.type('text/xml');
         res.send(twiml.toString());
-
     } catch (error) {
         console.error(`Error processing recording for appointment ${appointmentId}:`, error);
-        // In case of an error during processing, just hang up. The error is logged.
         const twiml = new twilio.twiml.VoiceResponse();
         twiml.hangup();
         res.type('text/xml');
         res.send(twiml.toString());
+    }
+}
+
+// --- NEW: Controller to handle call status updates ---
+export async function handleCallStatusUpdate(req, res) {
+    const { appointmentId } = req.query;
+    const { CallStatus, AnsweredBy } = req.body;
+
+    try {
+        await twilioCallService.updateCallStatus(appointmentId, CallStatus, AnsweredBy);
+        res.status(200).send(); // Acknowledge receipt of the webhook
+    } catch (error) {
+        console.error(`Error updating call status for appointment ${appointmentId}:`, error);
+        res.status(500).send();
     }
 }
