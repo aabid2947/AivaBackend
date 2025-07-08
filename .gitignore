@@ -10,4 +10,4 @@ build/
 *.log
 
 serviceAccountKey.json
-aiva-production-77824783e5fa.json
+*.json
