@@ -4,6 +4,7 @@ import { generateGeminiText } from '../../utils/geminiClient.js';
 import { getChatHistory, addMessageToHistory } from './chatService.js';
 import * as Prompts from './prompts.js';
 import { ConversationStates, IntentCategories, ReplyTypes, EmailMonitoringPreferences } from './constants.js';
+import { convertToISOTime } from '../../../helper/convertDateToISO.js';
 
 export async function getConversationState(userId, chatId) {
   const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
@@ -224,6 +225,9 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             aivaResponseContent = "That doesn't seem to be a valid phone number. Please provide a correct phone number, including the country code if necessary.";
             updatedApptDetails.bookingContactNumber = null; // Reset to null so we ask for it again
             nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+
+            // Convert date to ISO time for storage
+            // updatedApptDetails['preferredCallTime'] = convertToISOTime(updatedApptDetails['preferredCallTime'])
             await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
             break;
         }
@@ -231,11 +235,11 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key]);
 
         if (missingApptDetails.length === 0) {
-            const callDateTime = new Date(updatedApptDetails.preferredCallTime_iso_string_with_offset);
+            const callDateTime = new Date(updatedApptDetails.reminder_iso_string_with_offset);
             if (isNaN(callDateTime.getTime())) {
                 aivaResponseContent = "I had trouble understanding that date and time for the call. Could you please provide it again?";
                 nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-                updatedApptDetails.preferredCallTime_iso_string_with_offset = null;
+                updatedApptDetails.reminder_iso_string_with_offset = null;
                 await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
             } else {
                 aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${updatedApptDetails.patientName}, I will call ${updatedApptDetails.bookingContactNumber} regarding "${updatedApptDetails.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
@@ -244,15 +248,15 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             }
         } else {
             let followupQuestion = "Thanks! ";
-            if (missingApptDetails.includes('patientName')) {
+            if (missingApptDetails.includes('userName')) {
                 followupQuestion += "What is the full name of the person this appointment is for?";
-            } else if (missingApptDetails.includes('patientContact')) {
+            } else if (missingApptDetails.includes('userContact')) {
                 followupQuestion += "What is the patient's contact number or email?";
             } else if (missingApptDetails.includes('bookingContactNumber')) {
                 followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
             } else if (missingApptDetails.includes('reasonForAppointment')) {
                 followupQuestion += "What is the reason for this appointment?";
-            } else if (missingApptDetails.includes('preferredCallTime_iso_string_with_offset')) {
+            } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
                 followupQuestion += "And when would be a good time for me to make this call?";
             } else {
                 // Fallback if there are missing details but no specific question is matched
