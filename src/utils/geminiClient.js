@@ -2,13 +2,24 @@
 import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 
 // Ensure you have GEMINI_API_KEY in your .env file
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-if (!GEMINI_API_KEY) {
-  console.warn('GEMINI_API_KEY is not set in .env file. GeminiClient will not function.');
+let genAI =  null;
+
+try {
+   console.log('Attempting to use GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  genAI = new GoogleGenerativeAI();
+  console.log('GoogleGenerativeAI client initialized successfully using Application Default Credentials.');
+} catch (error) {
+  console.error('ERROR: Failed to initialize GoogleGenerativeAI client.');
+  console.error('Please ensure the GOOGLE_APPLICATION_CREDENTIALS environment variable is set to the absolute path of your Service Account JSON key file.');
+  console.error('Initialization Error Details:', error.message);
+  // genAI remains null, so subsequent calls to generation functions will log warnings.
 }
 
-const genAI = GEMINI_API_KEY ? new GoogleGenerativeAI(GEMINI_API_KEY) : null;
+// Optional: A final warning if initialization truly failed.
+if (!genAI) {
+  console.warn('WARNING: GeminiClient could not be configured. Gemini API calls will not function.');
+}
 
 // This model is multimodal and can handle both text and vision
 const modelConfig = {
