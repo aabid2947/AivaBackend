@@ -3,24 +3,17 @@ import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/ge
 
 // Ensure you have GEMINI_API_KEY in your .env file
 
-let genAI = null; // Initialize as null
-
-// Fetch API key from environment
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+let genAI =  null;
 
 try {
-    console.log('Attempting to initialize GoogleGenerativeAI with API Key.');
-    if (!GEMINI_API_KEY) {
-        throw new Error('GEMINI_API_KEY environment variable is not set.');
-    }
-    // Pass the API key directly to the constructor
-    genAI = new GoogleGenerativeAI(GEMINI_API_KEY); 
-    console.log('GoogleGenerativeAI client initialized successfully using API Key.');
+   console.log('Attempting to use GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  genAI = new GoogleGenerativeAI();
+  console.log('GoogleGenerativeAI client initialized successfully using Application Default Credentials.');
 } catch (error) {
-    console.error('ERROR: Failed to initialize GoogleGenerativeAI client.');
-    console.error('Please ensure the GEMINI_API_KEY environment variable is set in your .env file or deployment environment.');
-    console.error('Initialization Error Details:', error.message);
-    // genAI remains null, so subsequent calls to generation functions will log warnings.
+  console.error('ERROR: Failed to initialize GoogleGenerativeAI client.');
+  console.error('Please ensure the GOOGLE_APPLICATION_CREDENTIALS environment variable is set to the absolute path of your Service Account JSON key file.');
+  console.error('Initialization Error Details:', error.message);
+  // genAI remains null, so subsequent calls to generation functions will log warnings.
 }
 
 // Optional: A final warning if initialization truly failed.
