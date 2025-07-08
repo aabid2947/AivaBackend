@@ -16,6 +16,7 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js'
+// import { test } from './src/cron/appointmentScheduler.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -40,7 +41,7 @@ app.use('/api/twilio', twilioRoutes);
 app.use('/api/payments', mpesaRoutes);
 // --- NEW ---
 app.use('/api/appointments', appointmentRoutes); // Use appointment routes
-
+// test()
 // Basic error handler
 app.use((err, req, res, next) => {
 console.error(err.stack);

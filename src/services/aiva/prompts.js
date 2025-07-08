@@ -9,7 +9,7 @@ export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetai
 - "userContact": The phone number or email of the patient.
 - "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
 - "reasonForAppointment": The reason for the appointment.
-- "reminder_iso_string_with_offset": The full date and time for the reminder as a single ISO 8601 string including the timezone offset.
+- "reminder_iso_string_with_offset": The full date and time for the reminder as a single ISO 8601 string including the timezone offset. EX:  "reminder_iso_string_with_offset": "2025-07-05T18:45:00+05:30"
 
 The assistant has already collected some information:
 ${detailsString}

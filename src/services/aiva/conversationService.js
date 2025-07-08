@@ -48,7 +48,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
       const classifiedIntentRaw = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
       const classifiedIntent = classifiedIntentRaw ? classifiedIntentRaw.trim().toUpperCase() : null;
-      
+
       if (classifiedIntent === IntentCategories.CONVERSATIONAL_QUERY) {
         const chatHistory = await getChatHistory(userId, chatId, 10);
         aivaResponseContent = await generateGeminiText(Prompts.getContextualGuidancePrompt(chatHistory, "General assistance", userMessageContent));
@@ -67,29 +67,29 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
     case ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE:
       const confirmationResultRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, conversationState.lastProposedIntent));
       const confirmationResult = confirmationResultRaw ? confirmationResultRaw.trim().toUpperCase() : 'UNCLEAR';
-      
+
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversationState.lastProposedIntent;
-        
+
         if (confirmedIntent === IntentCategories.SET_REMINDER) {
           aivaResponseContent = "Great! What should I remind you about?";
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
-        
+
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
           aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name and contact info (phone/email) of the person the appointment is for?";
           nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { patientName: null, patientContact: null, bookingContactNumber: null, reasonForAppointment: null, preferredCallTime: null } });
-        
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, preferredCallTime: null } });
+
         } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
-            aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
-            nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
-            await updateConversationState(userId, chatId, nextState);
-        
+          aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
+          nextState = ConversationStates.AWAITING_CONTENT_FOR_SUMMARY;
+          await updateConversationState(userId, chatId, nextState);
+
         } else if (confirmedIntent === IntentCategories.MONITOR_EMAIL) {
-            aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
-            nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
-            await updateConversationState(userId, chatId, nextState);
+          aivaResponseContent = "Okay, for email monitoring, would you like me to just notify you of important emails, or would you also like me to help draft replies to some of them?";
+          nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
+          await updateConversationState(userId, chatId, nextState);
         }
 
       } else {
@@ -135,163 +135,168 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
-        const existingReminderDetails = conversationState.reminderDetails || {};
-        const extractedDetailsRaw = await generateGeminiText(Prompts.getPaymentDetailsExtractionPrompt(userMessageContent, existingReminderDetails));
-        
-        let updatedReminderDetails = {};
-        try {
-            const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
-            updatedReminderDetails = JSON.parse(cleanedJsonString);
-        } catch (e) {
-            console.error("Failed to parse reminder details JSON:", e, extractedDetailsRaw);
-            aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
-            nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-            break;
-        }
+      const existingReminderDetails = conversationState.reminderDetails || {};
+      const extractedDetailsRaw = await generateGeminiText(Prompts.getPaymentDetailsExtractionPrompt(userMessageContent, existingReminderDetails));
 
-        const missingReminderDetails = Object.keys(updatedReminderDetails).filter(key => !updatedReminderDetails[key]);
-
-        if (missingReminderDetails.length === 0) {
-            const reminderDateTime = new Date(updatedReminderDetails.reminder_iso_string_with_offset);
-
-            if (isNaN(reminderDateTime.getTime())) {
-                aivaResponseContent = "I had trouble understanding that date and time. Could you please provide it again? For example: 'tomorrow at 5pm'.";
-                nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-                updatedReminderDetails.reminder_iso_string_with_offset = null;
-                await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
-            } else {
-                aivaResponseContent = `Okay, I have the following details for your reminder: For "${updatedReminderDetails.task_description}" on ${reminderDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
-                nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
-                await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
-            }
-        } else {
-            let followupQuestion = "Thanks. ";
-            if (missingReminderDetails.includes('task_description')) {
-                followupQuestion += "What should I remind you about?";
-            } else if (missingReminderDetails.includes('reminder_iso_string_with_offset')) {
-                followupQuestion += "And for what date and time?";
-            }
-
-            aivaResponseContent = followupQuestion.trim();
-            nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-            await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
-        }
+      let updatedReminderDetails = {};
+      try {
+        const cleanedJsonString = extractedDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
+        updatedReminderDetails = JSON.parse(cleanedJsonString);
+      } catch (e) {
+        console.error("Failed to parse reminder details JSON:", e, extractedDetailsRaw);
+        aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
         break;
+      }
+
+      const missingReminderDetails = Object.keys(updatedReminderDetails).filter(key => !updatedReminderDetails[key]);
+
+      if (missingReminderDetails.length === 0) {
+        const reminderDateTime = new Date(updatedReminderDetails.reminder_iso_string_with_offset);
+
+        if (isNaN(reminderDateTime.getTime())) {
+          aivaResponseContent = "I had trouble understanding that date and time. Could you please provide it again? For example: 'tomorrow at 5pm'.";
+          nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+          updatedReminderDetails.reminder_iso_string_with_offset = null;
+          await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
+        } else {
+          aivaResponseContent = `Okay, I have the following details for your reminder: For "${updatedReminderDetails.task_description}" on ${reminderDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
+          nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
+          await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
+        }
+      } else {
+        let followupQuestion = "Thanks. ";
+        if (missingReminderDetails.includes('task_description')) {
+          followupQuestion += "What should I remind you about?";
+        } else if (missingReminderDetails.includes('reminder_iso_string_with_offset')) {
+          followupQuestion += "And for what date and time?";
+        }
+
+        aivaResponseContent = followupQuestion.trim();
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
+      }
+      break;
 
     case ConversationStates.AWAITING_REMINDER_CONFIRMATION:
-        const reminderConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the reminder details"));
-        const reminderConfirmation = reminderConfirmationRaw ? reminderConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
+      const reminderConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the reminder details"));
+      const reminderConfirmation = reminderConfirmationRaw ? reminderConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
 
-        if (reminderConfirmation === 'AFFIRMATIVE') {
-            const finalReminderDetails = conversationState.reminderDetails;
-            const reminderDateTime = new Date(finalReminderDetails.reminder_iso_string_with_offset);
+      if (reminderConfirmation === 'AFFIRMATIVE') {
+        const finalReminderDetails = conversationState.reminderDetails;
+        const reminderDateTime = new Date(finalReminderDetails.reminder_iso_string_with_offset);
 
-            const reminderDataToStore = {
-                userId,
-                taskDescription: finalReminderDetails.task_description,
-                reminderDateTime: reminderDateTime,
-                status: 'pending',
-                createdAt: new Date(),
-                chatId: chatId
-            };
-            const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
-            aivaResponseContent = `Great! I've set the reminder for "${reminderDataToStore.taskDescription}". Is there anything else?`;
-            nextState = ConversationStates.AWAITING_USER_REQUEST;
-            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, reminderDetails: {}, lastReminderId: reminderRef.id });
-        } else {
-            aivaResponseContent = "My apologies. What would you like to change?";
-            nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
-            await updateConversationState(userId, chatId, nextState);
-        }
+        const reminderDataToStore = {
+          userId,
+          taskDescription: finalReminderDetails.task_description,
+          reminderDateTime: reminderDateTime,
+          status: 'pending',
+          createdAt: new Date(),
+          chatId: chatId
+        };
+        const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
+        aivaResponseContent = `Great! I've set the reminder for "${reminderDataToStore.taskDescription}". Is there anything else?`;
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, reminderDetails: {}, lastReminderId: reminderRef.id });
+      } else {
+        aivaResponseContent = "My apologies. What would you like to change?";
+        nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+        await updateConversationState(userId, chatId, nextState);
+      }
+      break;
+
+    case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
+      const existingApptDetails = conversationState.appointmentDetails || {};
+      const extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
+
+      let updatedApptDetails = {};
+      try {
+        const cleanedJsonString = extractedApptDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
+        updatedApptDetails = JSON.parse(cleanedJsonString);
+      } catch (e) {
+        console.error("Failed to parse appointment details JSON:", e, extractedApptDetailsRaw);
+        aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         break;
-    
-     case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
-        const existingApptDetails = conversationState.appointmentDetails || {};
-        const extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
-        
-        let updatedApptDetails = {};
-        try {
-            const cleanedJsonString = extractedApptDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
-            updatedApptDetails = JSON.parse(cleanedJsonString);
-        } catch (e) {
-            console.error("Failed to parse appointment details JSON:", e, extractedApptDetailsRaw);
-            aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
-            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-            break;
-        }
+      }
 
-        // --- NEW: Add a validation step for the phone number after AI extraction ---
-        if (updatedApptDetails.bookingContactNumber === 'INVALID') {
-            aivaResponseContent = "That doesn't seem to be a valid phone number. Please provide a correct phone number, including the country code if necessary.";
-            updatedApptDetails.bookingContactNumber = null; // Reset to null so we ask for it again
-            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+      // --- NEW: Add a validation step for the phone number after AI extraction ---
+      if (updatedApptDetails.bookingContactNumber === 'INVALID') {
+        aivaResponseContent = "That doesn't seem to be a valid phone number. Please provide a correct phone number, including the country code if necessary.";
+        updatedApptDetails.bookingContactNumber = null; // Reset to null so we ask for it again
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
 
-            // Convert date to ISO time for storage
-            // updatedApptDetails['preferredCallTime'] = convertToISOTime(updatedApptDetails['preferredCallTime'])
-            await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-            break;
-        }
-
-        const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key]);
-
-        if (missingApptDetails.length === 0) {
-            const callDateTime = new Date(updatedApptDetails.reminder_iso_string_with_offset);
-            if (isNaN(callDateTime.getTime())) {
-                aivaResponseContent = "I had trouble understanding that date and time for the call. Could you please provide it again?";
-                nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-                updatedApptDetails.reminder_iso_string_with_offset = null;
-                await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-            } else {
-                aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${updatedApptDetails.patientName}, I will call ${updatedApptDetails.bookingContactNumber} regarding "${updatedApptDetails.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
-                nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
-                await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-            }
-        } else {
-            let followupQuestion = "Thanks! ";
-            if (missingApptDetails.includes('userName')) {
-                followupQuestion += "What is the full name of the person this appointment is for?";
-            } else if (missingApptDetails.includes('userContact')) {
-                followupQuestion += "What is the patient's contact number or email?";
-            } else if (missingApptDetails.includes('bookingContactNumber')) {
-                followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
-            } else if (missingApptDetails.includes('reasonForAppointment')) {
-                followupQuestion += "What is the reason for this appointment?";
-            } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
-                followupQuestion += "And when would be a good time for me to make this call?";
-            } else {
-                // Fallback if there are missing details but no specific question is matched
-                followupQuestion = "I still need a little more information. Can you please provide the remaining details?";
-            }
-            
-            aivaResponseContent = followupQuestion.trim();
-            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-            await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-        }
+        // Convert date to ISO time for storage
+        // updatedApptDetails['preferredCallTime'] = convertToISOTime(updatedApptDetails['preferredCallTime'])
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         break;
-        
+      }
+
+      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key]);
+
+      if (missingApptDetails.length === 0) {
+        const callDateTime = new Date(updatedApptDetails.reminder_iso_string_with_offset);
+        if (isNaN(callDateTime.getTime())) {
+          aivaResponseContent = "I had trouble understanding that date and time for the call. Could you please provide it again?";
+          nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+          updatedApptDetails.reminder_iso_string_with_offset = null;
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        } else {
+          aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${updatedApptDetails.userName}, I will call ${updatedApptDetails.bookingContactNumber} regarding "${updatedApptDetails.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
+          nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        }
+      } else {
+        let followupQuestion = "Thanks! ";
+        if (missingApptDetails.includes('userName')) {
+          followupQuestion += "What is the full name of the person this appointment is for?";
+        } else if (missingApptDetails.includes('userContact')) {
+          followupQuestion += "What is the user's contact number or email?";
+        } else if (missingApptDetails.includes('bookingContactNumber')) {
+          followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
+        } else if (missingApptDetails.includes('reasonForAppointment')) {
+          followupQuestion += "What is the reason for this appointment?";
+        } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
+          followupQuestion += "And when would be a good time for me to make this call?";
+        } else {
+          // Fallback if there are missing details but no specific question is matched
+          followupQuestion = "I still need a little more information. Can you please provide the remaining details?";
+        }
+
+        aivaResponseContent = followupQuestion.trim();
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+      }
+      break;
+
     case ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION:
-        const apptConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the appointment details"));
-        const apptConfirmation = apptConfirmationRaw ? apptConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
+      const apptConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the appointment details"));
+      const apptConfirmation = apptConfirmationRaw ? apptConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
 
-        if (apptConfirmation === 'AFFIRMATIVE') {
-            const finalApptDetails = conversationState.appointmentDetails;
-            const appointmentData = {
-                ...finalApptDetails,
-                userId,
-                chatId,
-                status: 'pending',
-                createdAt: new Date().toISOString()
-            };
-            const appointmentRef = await db.collection('users').doc(userId).collection('appointments').add(appointmentData);
-            aivaResponseContent = `Great, I have all the details. I will make the call around the preferred time to book the appointment for ${finalApptDetails.patientName}. I'll let you know how it goes. Is there anything else?`;
-            nextState = ConversationStates.AWAITING_USER_REQUEST;
-            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, appointmentDetails: {}, lastAppointmentId: appointmentRef.id });
-        } else {
-            aivaResponseContent = "My apologies. What would you like to change?";
-            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-            await updateConversationState(userId, chatId, nextState);
-        }
-        break;
+      if (apptConfirmation === 'AFFIRMATIVE') {
+        const finalApptDetails = conversationState.appointmentDetails;
+
+        // Convert ISO string to Date object
+        const scheduleTime = new Date(finalApptDetails.reminder_iso_string_with_offset);
+
+        const appointmentData = {
+          ...finalApptDetails,
+          userId,
+          chatId,
+          status: 'pending',
+          createdAt: new Date(), // Store as Firestore Timestamp
+          scheduleTime: scheduleTime, // ✅ Firestore will store this as Timestamp
+        };
+        const appointmentRef = await db.collection('users').doc(userId).collection('appointments').add(appointmentData);
+        aivaResponseContent = `Great, I have all the details. I will make the call around the preferred time to book the appointment for ${finalApptDetails.userName}. I'll let you know how it goes. Is there anything else?`;
+        nextState = ConversationStates.AWAITING_USER_REQUEST;
+        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, appointmentDetails: {}, lastAppointmentId: appointmentRef.id });
+      } else {
+        aivaResponseContent = "My apologies. What would you like to change?";
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState);
+      }
+      break;
   }
 
   const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', aivaResponseContent, nextState);
