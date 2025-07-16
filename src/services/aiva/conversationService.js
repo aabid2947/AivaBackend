@@ -46,7 +46,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // --- UPDATED (Fix for Issue 3): Check for closing remarks first ---
       const closingRemarkRaw = await generateGeminiText(Prompts.getClosingRemarkClassificationPrompt(userMessageContent));
       if (closingRemarkRaw && closingRemarkRaw.trim().toUpperCase() === 'CLOSING') {
           aivaResponseContent = "You're welcome! Let me know if you need anything else.";
@@ -54,7 +53,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           break;
       }
 
-      // --- UPDATED (Fix for Issue 2): Use new prompt to get intent and details ---
       const initialExtractionRaw = await generateGeminiText(Prompts.getInitialIntentAndDetailsExtractionPrompt(userMessageContent));
       let initialExtraction = {};
       try {
@@ -98,7 +96,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       if (confirmationResult === 'AFFIRMATIVE') {
         const confirmedIntent = conversationState.lastProposedIntent;
 
-        // --- UPDATED (Fix for Issue 2): Handle pre-filled details ---
         if (confirmedIntent === IntentCategories.SET_REMINDER) {
             const rd = conversationState.reminderDetails || {};
             if (!rd.task_description) {
@@ -118,7 +115,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
             nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
             aivaResponseContent = "Okay, I can help with that. To book the appointment, let's confirm the details. What is the full name and contact info of the person the appointment is for?";
-            await updateConversationState(userId, chatId, nextState); // Details already in state
+            await updateConversationState(userId, chatId, nextState);
 
         } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
           aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
@@ -132,9 +129,25 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         }
 
       } else {
-        aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
-        nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
-        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+        // --- UPDATED: Handle rejected task switch gracefully ---
+        const hasReminderDetails = conversationState.reminderDetails && Object.values(conversationState.reminderDetails).some(v => v !== null);
+
+        if (hasReminderDetails) {
+            nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
+            let followupQuestion = "My apologies, let's continue with the reminder. ";
+            const missing = Object.keys(conversationState.reminderDetails).filter(k => !conversationState.reminderDetails[k]);
+            if (missing.includes('task_description')) {
+                followupQuestion += "What should I remind you about?";
+            } else if (missing.includes('reminder_iso_string_with_offset')) {
+                followupQuestion += "And for what date and time?";
+            }
+            aivaResponseContent = followupQuestion.trim();
+            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+        } else {
+            aivaResponseContent = "My apologies. Could you please clarify what you need help with?";
+            nextState = ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT;
+            await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null });
+        }
       }
       break;
 
@@ -161,7 +174,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           aivaResponseContent = "Sorry, I didn't quite understand. Could you please specify 'notify only' or 'help reply'?";
           nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
         }
-      } else { // UNRELATED or CONTEXTUAL_QUERY
+      } else { 
         const chatHistory = await getChatHistory(userId, chatId, 10);
         const guidancePrompt = Prompts.getContextualGuidancePrompt(chatHistory, aivaQuestion, userMessageContent);
         aivaResponseContent = await generateGeminiText(guidancePrompt);
@@ -169,7 +182,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       }
       break;
 
-    // --- UPDATED (Fix for Issue 1): Major logic overhaul for task-switching ---
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
       const existingReminderDetails = conversationState.reminderDetails || {};
       let reminderQuestion = "Could you provide the remaining details for the reminder?";
@@ -201,11 +213,17 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
             await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
         } else {
-            aivaResponseContent = "Thanks. And for what date and time?";
+            let followupQuestion = "Thanks. ";
+            if (missingReminderDetails.includes('task_description')) {
+                followupQuestion += "What should I remind you about?";
+            } else if (missingReminderDetails.includes('reminder_iso_string_with_offset')) {
+                followupQuestion += "And for what date and time?";
+            }
+            aivaResponseContent = followupQuestion.trim();
             nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
             await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
         }
-      } else { // UNRELATED or CONTEXTUAL - check for task switch
+      } else { 
           const newIntentRaw = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
           const newIntent = newIntentRaw ? newIntentRaw.trim().toUpperCase() : null;
 
@@ -223,7 +241,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.AWAITING_REMINDER_CONFIRMATION:
-      // This logic remains largely the same
       const reminderConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the reminder details"));
       const reminderConfirmation = reminderConfirmationRaw ? reminderConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
 
@@ -243,7 +260,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
-      // This logic remains largely the same but can be enhanced with the task-switching pattern in the future
       const existingApptDetails = conversationState.appointmentDetails || {};
       const extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
 
@@ -257,10 +273,9 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         break;
       }
       
-      // The rest of this case logic continues as before...
       if (updatedApptDetails.bookingContactNumber === 'INVALID') {
         aivaResponseContent = "That doesn't seem to be a valid phone number. Please provide a correct phone number, including the country code if necessary.";
-        updatedApptDetails.bookingContactNumber = null; // Reset to null so we ask for it again
+        updatedApptDetails.bookingContactNumber = null;
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         break;
@@ -291,7 +306,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION:
-      // This logic remains largely the same
       const apptConfirmationRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "the appointment details"));
       const apptConfirmation = apptConfirmationRaw ? apptConfirmationRaw.trim().toUpperCase() : 'UNCLEAR';
 
