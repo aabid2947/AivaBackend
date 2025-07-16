@@ -52,6 +52,56 @@ Example Output:
 Ensure the output is ONLY the JSON object.`;
 }
 
+// --- NEW PROMPT to get intent and details simultaneously ---
+export function getInitialIntentAndDetailsExtractionPrompt(userMessage) {
+  return `Analyze the user's message to determine their primary intent and extract any relevant details.
+Return a single, valid JSON object with two keys: "intent" and "details".
+
+The "intent" must be one of: ${Object.values(IntentCategories).join(', ')}.
+
+The "details" object should correspond to the intent:
+- If intent is "${IntentCategories.SET_REMINDER}", extract:
+  - "task_description": A brief description of what the reminder is for.
+  - "reminder_iso_string_with_offset": The full date and time for the reminder as an ISO 8601 string with timezone offset.
+- If intent is "${IntentCategories.APPOINTMENT_CALL}", extract:
+  - "userName": The full name of the person for the appointment.
+  - "userContact": The phone number or email of the patient.
+  - "bookingContactNumber": The phone number to call for booking.
+  - "reasonForAppointment": The reason for the appointment.
+  - "reminder_iso_string_with_offset": The suggested date/time for the call.
+
+If a detail is not present in the message, its value should be null.
+Today's date is ${new Date().toDateString()}. The user is in IST (UTC+5:30).
+
+User message: "${userMessage}"
+
+Example for "remind me to pay college fees tomorrow at 5pm":
+{
+  "intent": "${IntentCategories.SET_REMINDER}",
+  "details": {
+    "task_description": "Pay college fees",
+    "reminder_iso_string_with_offset": "2025-07-17T17:00:00+05:30"
+  }
+}
+
+Example for "hi":
+{
+  "intent": "${IntentCategories.CONVERSATIONAL_QUERY}",
+  "details": {}
+}
+
+Ensure the output is ONLY the JSON object.`;
+}
+
+// --- NEW PROMPT to detect conversation closing remarks ---
+export function getClosingRemarkClassificationPrompt(userMessage) {
+  return `A user has just finished a task with an AI assistant. The assistant asked "Is there anything else?".
+The user replied: "${userMessage}"
+Does this reply mean the user is finished with the conversation (e.g., "no", "nothing", "that's all")?
+Return only "CLOSING" or "NOT_CLOSING".`;
+}
+
+
 export function getSummarizationPrompt(textContent) {
   return `Please provide a concise summary and a "TL;DR" (Too Long; Didn't Read) version for the following text.
 
