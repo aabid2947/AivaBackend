@@ -2,7 +2,7 @@
 // This service checks for due reminders and sends push notifications via FCM.
 
 import { db, admin } from '../config/firebaseAdmin.js';
-
+import { generateGeminiText } from '../utils/geminiClient.js';
 /**
  * Fetches all reminders that are due and have not been sent yet.
  * A reminder is considered "due" if its reminderDateTime is in the past.
@@ -39,10 +39,22 @@ async function getDueReminders() {
  * @param {object} reminder - The reminder object containing the details.
  */
 async function sendPushNotification(fcmToken, reminder) {
+ const prompt = `
+You are a smart assistant. Rewrite the following reminder as a short, direct notification message to the user. 
+
+The output must:
+- Be a single sentence
+- Be no more than 5-6 words
+- Do NOT include any explanation or introduction text.
+
+Reminder: ${reminder.taskDescription}
+
+Respond with ONLY the notification sentence.`;
+  const summarizedResponse = generateGeminiText(prompt);
   const message = {
     notification: {
-      title: 'Payment Reminder',
-      body: `Don't forget: ${reminder.taskDescription}`,
+      title: 'Reminder',
+      body:summarizedResponse,
     },
     token: fcmToken,
     // You can also add custom data to handle the notification in your app
