@@ -39,7 +39,7 @@ The user just sent a new message: "${userMessage}"
 
 Analyze the new message to extract or update the details.
 - Today's date is ${new Date().toDateString()}.
-- The user is in the IST (India Standard Time, UTC+5:30) timezone. When they say "6:45 PM", it means 18:45 in their local time.
+- The user is in the EAT (East Africa Time UTC+3 ) timezone. When they say "6:45 PM", it means 18:45 in their local time.
 - Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+05:30".
 
 Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
