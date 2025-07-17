@@ -73,7 +73,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const { task_description, reminder_iso_string_with_offset } = details;
         if (task_description && reminder_iso_string_with_offset) {
           const reminderDateTime = new Date(reminder_iso_string_with_offset);
-          aivaResponseContent = `Okay, I have the following details for your reminder: For "${task_description}" on ${reminderDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
+          aivaResponseContent = `Okay, I have the following details for your reminder: For "${task_description}" on ${reminderDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
           nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
           await updateConversationState(userId, chatId, nextState, { reminderDetails: details });
         } else if (task_description) {
@@ -216,7 +216,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           updatedReminderDetails.reminder_iso_string_with_offset = null;
           await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
         } else {
-          aivaResponseContent = `Okay, I have the following details for your reminder: For "${updatedReminderDetails.task_description}" on ${reminderDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
+          aivaResponseContent = `Okay, I have the following details for your reminder: For "${updatedReminderDetails.task_description}" on ${reminderDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
           nextState = ConversationStates.AWAITING_REMINDER_CONFIRMATION;
           await updateConversationState(userId, chatId, nextState, { reminderDetails: updatedReminderDetails });
         }
@@ -304,7 +304,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           updatedApptDetails.reminder_iso_string_with_offset = null;
           await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         } else {
-          aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${updatedApptDetails.userName}, I will call ${updatedApptDetails.bookingContactNumber} regarding "${updatedApptDetails.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}. Is this correct?`;
+          aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${updatedApptDetails.userName}, I will call ${updatedApptDetails.bookingContactNumber} regarding "${updatedApptDetails.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
           nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
           await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         }
