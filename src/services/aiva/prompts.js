@@ -71,7 +71,7 @@ The "details" object should correspond to the intent:
   - "reminder_iso_string_with_offset": The suggested date/time for the call.
 
 If a detail is not present in the message, its value should be null.
-Today's date is ${new Date().toDateString()}. The user is in IST (UTC+5:30).
+Today's date is ${new Date().toDateString()}. The user is in EAT (UTC+3:00).
 
 User message: "${userMessage}"
 
