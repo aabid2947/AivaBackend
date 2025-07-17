@@ -50,7 +50,8 @@ The output must:
 Reminder: ${reminder.taskDescription}
 
 Respond with ONLY the notification sentence.`;
-  const summarizedResponse = generateGeminiText(prompt);
+const summarizedResponse = await generateGeminiText(prompt);
+console.log(summarizedResponse)
   const message = {
     notification: {
       title: 'Reminder',
