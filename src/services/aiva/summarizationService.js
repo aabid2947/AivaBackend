@@ -6,6 +6,7 @@ import { updateConversationState } from './conversationService.js';
 import { getSummarizationPrompt, getVisionSummarizationPrompt } from './prompts.js';
 import { ConversationStates } from './constants.js';
 // import pdf from 'pdf-parse'; 
+import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 export async function performSummarization(userId, chatId, textToSummarize) {
   if (!db) throw new Error('Database not initialized.');
