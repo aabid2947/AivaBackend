@@ -46,7 +46,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // UPDATED: Handle graceful closing of conversation
+      // Handle graceful closing of conversation
       if (conversationState.taskJustCompleted) {
         await updateConversationState(userId, chatId, nextState, { taskJustCompleted: false });
         const closingRemarkRaw = await generateGeminiText(Prompts.getClosingRemarkClassificationPrompt(userMessageContent));
@@ -57,7 +57,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         }
       }
 
-      // UPDATED: Use new prompt to get intent and details at once
+      // Use new prompt to get intent and details at once
       const extractedDataRaw = await generateGeminiText(Prompts.getInitialIntentAndDetailsExtractionPrompt(userMessageContent));
       let intent, details;
       try {
@@ -181,7 +181,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
-      // UPDATED: Pre-emptive check for task switching
+      
       const newIntentRawFromReminder = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
       const newIntentFromReminder = newIntentRawFromReminder ? newIntentRawFromReminder.trim().toUpperCase() : null;
       if (newIntentFromReminder && newIntentFromReminder !== IntentCategories.SET_REMINDER && [IntentCategories.MONITOR_EMAIL, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(newIntentFromReminder)) {
@@ -191,7 +191,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           break;
       }
 
-      // If not switching, proceed with detail extraction
       const existingReminderDetails = conversationState.reminderDetails || {};
       const extractedDetailsRaw = await generateGeminiText(Prompts.getPaymentDetailsExtractionPrompt(userMessageContent, existingReminderDetails));
 
@@ -262,7 +261,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
-      // UPDATED: Pre-emptive check for task switching
+
       const newIntentRawFromAppt = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
       const newIntentFromAppt = newIntentRawFromAppt ? newIntentRawFromAppt.trim().toUpperCase() : null;
       if (newIntentFromAppt && newIntentFromAppt !== IntentCategories.APPOINTMENT_CALL && [IntentCategories.MONITOR_EMAIL, IntentCategories.SET_REMINDER, IntentCategories.SUMMARIZE_CONTENT].includes(newIntentFromAppt)) {

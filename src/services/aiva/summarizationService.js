@@ -5,6 +5,7 @@ import { addMessageToHistory } from './chatService.js';
 import { updateConversationState } from './conversationService.js';
 import { getSummarizationPrompt, getVisionSummarizationPrompt } from './prompts.js';
 import { ConversationStates } from './constants.js';
+// import pdf from 'pdf-parse'; 
 
 export async function performSummarization(userId, chatId, textToSummarize) {
   if (!db) throw new Error('Database not initialized.');
@@ -28,33 +29,47 @@ export async function performSummarization(userId, chatId, textToSummarize) {
 
 export async function performPdfSummarization(userId, chatId, file) {
   if (!db) throw new Error('Database not initialized.');
-  
-  try {
-    const pdf = (await import('pdf-parse')).default;
-    const data = await pdf(file.buffer);
-    const textToSummarize = data.text;
 
-    if (!textToSummarize) {
+  try {
+    // pdfjs-dist requires a "worker" to be specified, even in Node.js. This is the correct way to do it.
+    pdfjs.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+
+    // Load the document from the raw buffer you get from multer
+    const doc = await pdfjs.getDocument({ data: file.buffer }).promise;
+    let fullText = '';
+
+    // Iterate through each page of the PDF
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const textContent = await page.getTextContent();
+      
+      // Join the text items from the page into a single string
+      const pageText = textContent.items.map(item => item.str).join(' ');
+      fullText += pageText + '\n'; // Append the page's text
+    }
+
+    if (!fullText.trim()) {
       throw new Error("Could not extract text from the PDF. It may be an image-based PDF.");
     }
 
-    return await performSummarization(userId, chatId, textToSummarize);
+    // Now, pass the extracted text to your existing summarization service
+    return await performSummarization(userId, chatId, fullText);
 
   } catch (error) {
-    console.error('Failed to parse PDF:', error);
-    const errorMessage = "I couldn't extract text from this PDF. It might be an image or a scanned document, which I can't summarize yet.";
-    const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', errorMessage, ConversationStates.AWAITING_USER_REQUEST);
+    console.error('Failed to parse PDF with pdfjs-dist:', error);
+    const userErrorMessage = "I couldn't extract text from this PDF. It might be an image or a scanned document, which I can't summarize yet.";
+    const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', userErrorMessage, ConversationStates.AWAITING_USER_REQUEST);
     await updateConversationState(userId, chatId, ConversationStates.AWAITING_USER_REQUEST, { lastProposedIntent: null, lastAivaMessageId: aivaMessageRef.id });
+    
     return {
       id: aivaMessageRef.id,
-      aivaResponse: errorMessage,
+      aivaResponse: userErrorMessage,
       currentState: ConversationStates.AWAITING_USER_REQUEST,
       chatId,
       userId,
     };
   }
 }
-
 export async function performImageSummarization(userId, chatId, file) {
   if (!db) throw new Error('Database not initialized.');
   

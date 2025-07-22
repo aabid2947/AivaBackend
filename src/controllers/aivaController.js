@@ -63,7 +63,7 @@ export async function handleAivaChatInteraction(req, res) {
   }
 }
 
-// --- UPDATED Controller Function for Summarization ---
+//  UPDATED Controller Function for Summarization 
 export async function handleSummarizationRequest(req, res) {
     try {
         const userId = req.user?.id || req.user?.uid;
