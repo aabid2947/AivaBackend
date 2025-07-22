@@ -36,7 +36,8 @@ export async function performPdfSummarization(userId, chatId, file) {
     pdfjs.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
 
     // Load the document from the raw buffer you get from multer
-    const doc = await pdfjs.getDocument({ data: file.buffer }).promise;
+    // const doc = await pdfjs.getDocument({ data: file.buffer }).promise;
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(file.buffer) }).promise;
     let fullText = '';
 
     // Iterate through each page of the PDF
