@@ -38,17 +38,25 @@ const getAffirmativeNegativeClassificationPrompt = (userReply) => {
     Is this reply affirmative (e.g., yes, confirm, correct) or negative (e.g., no, wrong, not that)?
     Return "AFFIRMATIVE", "NEGATIVE", or "UNCLEAR".`;
 };
+// src/services/twilioCallService.js
 
 async function getAppointmentRef(appointmentId) {
-    const snapshot = await db.collectionGroup('appointments').where('__name__', '==', appointmentId).get();
-    const foundDoc = snapshot.docs[0];
+    console.log(`[INFO] getAppointmentRef: Searching collection group 'appointments' for document with ID: ${appointmentId}`);
+    
+    // Get all documents from the 'appointments' collection group.
+    const snapshot = await db.collectionGroup('appointments').get();
+    
+    // Find the specific document by its ID from the results.
+    const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
+    
     if (!foundDoc) {
-        console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}.`);
+        console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId} in any 'appointments' subcollection.`);
         throw new Error(`Could not find appointment ${appointmentId}`);
     }
+    
+    console.log(`[INFO] getAppointmentRef: Successfully found appointment at path: ${foundDoc.ref.path}`);
     return foundDoc.ref;
 }
-
 export async function initiateAppointmentFlow(appointmentId) {
     console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
