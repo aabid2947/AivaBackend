@@ -2,6 +2,7 @@
 import twilio from 'twilio';
 import * as twilioCallService from '../services/twilioCallService.js';
 
+// Controller to generate the initial TwiML for the call
 export async function generateInitialCallTwiML(req, res) {
     const { appointmentId } = req.query; 
 
@@ -19,25 +20,29 @@ export async function generateInitialCallTwiML(req, res) {
     }
 }
 
-export async function processCallRecording(req, res) {
+// --- NEW: Replaces processCallRecording to handle transcribed speech from <Gather> ---
+export async function handleSpokenResponse(req, res) {
     const { appointmentId } = req.query;
-    const recordingUrl = req.body.RecordingUrl;
-    
+    const transcribedText = req.body.SpeechResult;
+    const timedOut = req.query.timedOut === 'true';
+
+    console.log(`[INFO] handleSpokenResponse: Appt ${appointmentId}. Timed Out: ${timedOut}. Transcription: "${transcribedText}"`);
+
     try {
-        await twilioCallService.handleAppointmentResponse(appointmentId, recordingUrl);
-        const twiml = new twilio.twiml.VoiceResponse();
-        twiml.hangup();
+        const twiml = await twilioCallService.handleAppointmentResponse(appointmentId, transcribedText, timedOut);
         res.type('text/xml');
         res.send(twiml.toString());
     } catch (error) {
-        console.error(`Error processing recording for appointment ${appointmentId}:`, error);
+        console.error(`Error handling spoken response for appointment ${appointmentId}:`, error);
         const twiml = new twilio.twiml.VoiceResponse();
+        twiml.say('Sorry, an error occurred on our end. Goodbye.');
         twiml.hangup();
         res.type('text/xml');
         res.send(twiml.toString());
     }
 }
 
+// Controller to handle call status updates
 export async function handleCallStatusUpdate(req, res) {
     const { appointmentId } = req.query;
     const { CallStatus, AnsweredBy } = req.body;
