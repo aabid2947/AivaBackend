@@ -68,34 +68,34 @@ function fileToGenerativePart(buffer, mimeType) {
  * @returns {Promise<string|null>} The generated text or null if an error occurs.
  */
 export async function generateGeminiText(prompt, history = []) {
+  console.log(`[INFO] generateGeminiText: Called.`);
   if (!genAI) {
-    console.error('Gemini API key not configured. Cannot generate text.');
+    console.error('[ERROR] generateGeminiText: Gemini API key not configured.');
     return null;
   }
 
   try {
-    
+    console.log(`[DEBUG] generateGeminiText: Prompt: "${prompt}"`);
     const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
     
-    const chatParts = [
-        ...history,
-        { role: "user", parts: [{ text: prompt }] }
-    ];
-
+    const chatParts = [ ...history, { role: "user", parts: [{ text: prompt }] }];
     const result = await model.generateContent({
         contents: chatParts,
         generationConfig: modelConfig.generationConfig,
         safetySettings: modelConfig.safetySettings,
     });
 
-    if (result?.response?.candidates?.[0]?.content?.parts?.[0]?.text) {
-        return result.response.candidates[0].content.parts.map(part => part.text).join('');
+    const responseText = result?.response?.candidates?.[0]?.content?.parts?.map(part => part.text).join('');
+    
+    if (responseText) {
+        console.log(`[DEBUG] generateGeminiText: Raw response from API: "${responseText}"`);
+        return responseText;
     }
     
-    console.warn('Gemini API (text) returned no content or unexpected structure:', result);
+    console.warn('[WARN] generateGeminiText: Gemini API returned no content or unexpected structure.', result);
     return "I'm having a little trouble thinking right now. Could you try rephrasing?";
   } catch (error) {
-    console.error('Error calling Gemini API (text):', error.message);
+    console.error(`[ERROR] generateGeminiText: Error calling Gemini API: ${error.message}`);
     return null;
   }
 }
@@ -137,9 +137,11 @@ export async function generateGeminiVisionResponse(prompt, imageBuffer, imageMim
 
 
 // --- NEW FUNCTION for Audio Transcription ---
+
 export async function generateGeminiAudioTranscription(audioBuffer, audioMimeType) {
+    console.log(`[INFO] generateGeminiAudioTranscription: Called for MIME type: ${audioMimeType}`);
     if (!genAI) {
-        console.error('Gemini API key not configured. Cannot transcribe audio.');
+        console.error('[ERROR] generateGeminiAudioTranscription: Gemini API key not configured.');
         return null;
     }
 
@@ -147,18 +149,16 @@ export async function generateGeminiAudioTranscription(audioBuffer, audioMimeTyp
         const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
         const audioPart = fileToGenerativePart(audioBuffer, audioMimeType);
 
-        // For transcription, you often just need to provide the audio and a simple prompt.
         const prompt = "Transcribe the following audio recording accurately.";
-
         const result = await model.generateContent([prompt, audioPart]);
         const response = await result.response;
         const text = response.text();
         
-        console.log(`Gemini Transcription: ${text}`);
+        console.log(`[DEBUG] generateGeminiAudioTranscription: Transcription result: "${text}"`);
         return text;
 
     } catch (error) {
-        console.error('Error calling Gemini API (audio):', error.message);
+        console.error(`[ERROR] generateGeminiAudioTranscription: Error calling Gemini API: ${error.message}`);
         return null;
     }
 }

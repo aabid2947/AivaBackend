@@ -4,105 +4,157 @@ import { db } from '../config/firebaseAdmin.js';
 import { generateGeminiAudioTranscription, generateGeminiText } from '../utils/geminiClient.js';
 import axios from 'axios';
 
-const getTranscriptionAnalysisPrompt = (transcribedText) => {
-    return `A user was asked if a proposed appointment time was okay, or to suggest an alternative.
+// --- (Helper functions like getTranscriptionAnalysisPrompt and getAppointmentRef remain the same) ---
+const getTranscriptionAnalysisPrompt = (transcribedText, currentSuggestion) => {
+    return `You are an AI assistant helping to book an appointment.
+    The user was asked about a proposed appointment time: "${currentSuggestion}".
     Their spoken response was: "${transcribedText}"
 
     Analyze this response and classify it into one of three categories: "CONFIRMED", "RESCHEDULE", or "UNCLEAR".
-    - If the user agrees (e.g., "yes", "that's fine", "okay"), respond with a JSON object like: {"status": "CONFIRMED"}
-    - If the user suggests a new time (e.g., "how about tomorrow at 2pm?", "no, I need something in the evening"), respond with a JSON object containing the new suggestion: {"status": "RESCHEDULE", "suggestion": "The user suggested a new time: ${transcribedText}"}
-    - If the response is unclear, off-topic, or just noise, respond with a JSON object like: {"status": "UNCLEAR"}
+    - If the user agrees (e.g., "yes", "that's fine", "okay"), respond with a JSON object: {"status": "CONFIRMED"}
+    - If the user suggests a new time or rejects the current one (e.g., "how about tomorrow at 2pm?", "no, I need something in the evening"), respond with a JSON object: {"status": "RESCHEDULE", "suggestion": "${transcribedText}"}
+    - If the response is unclear, off-topic, or just noise, respond with a JSON object: {"status": "UNCLEAR"}
     
     Return ONLY the JSON object.`;
 };
 
 async function getAppointmentRef(appointmentId) {
+    console.log(`[INFO] getAppointmentRef: Searching for appointmentId: ${appointmentId}`);
     const snapshot = await db.collectionGroup('appointments').where('__name__', '==', appointmentId).limit(1).get();
     if (snapshot.empty) {
+        console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}`);
         throw new Error(`Could not find appointment ${appointmentId}`);
     }
+    console.log(`[INFO] getAppointmentRef: Found appointment.`);
     return snapshot.docs[0].ref;
 }
 
-export async function initiateAppointmentFlow(appointmentId) {
-    if (!appointmentId) throw new Error('Appointment ID is missing.');
 
-    const appointmentRef = await getAppointmentRef(appointmentId);
-    const appointment = (await appointmentRef.get()).data();
-    
+// --- CORE TWILIO LOGIC with Enhanced Logging ---
+
+export async function initiateAppointmentFlow(appointmentId, initialMessage) {
+    console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
+    if (!appointmentId) {
+        console.error("[ERROR] initiateAppointmentFlow: Appointment ID is missing.");
+        throw new Error('Appointment ID is missing.');
+    }
+
+    try {
+        const appointmentRef = await getAppointmentRef(appointmentId);
+        const appointment = (await appointmentRef.get()).data();
+        
+        const twiml = new twilio.twiml.VoiceResponse();
+
+        twiml.say({ voice: 'alice' }, "Hello, this is an automated assistant from Aiva.");
+        twiml.pause({ length: 1 });
+        
+        const firstQuestion = initialMessage || `I'm calling on behalf of ${appointment.patientName} to book an appointment regarding ${appointment.reasonForAppointment}. The proposed time is [time]. Is this okay?`;
+
+        const gather = twiml.gather({
+            input: 'speech',
+            action: `/api/twilio/twiML/handleResponse?appointmentId=${appointmentId}`,
+            speechTimeout: 'auto',
+            speechModel: 'experimental_conversations',
+        });
+        gather.say({ voice: 'alice' }, firstQuestion);
+
+        twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleResponse?appointmentId=${appointmentId}&timedOut=true`);
+        
+        console.log(`[DEBUG] initiateAppointmentFlow: Generated TwiML: ${twiml.toString()}`);
+        return twiml;
+
+    } catch (error) {
+        console.error(`[ERROR] initiateAppointmentFlow: Failed for appointmentId: ${appointmentId}. Error: ${error.message}`);
+        const twiml = new twilio.twiml.VoiceResponse();
+        twiml.say("Sorry, an error occurred on our end. Goodbye.");
+        twiml.hangup();
+        return twiml;
+    }
+}
+
+export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
+    console.log(`[INFO] handleAppointmentResponse: Starting for appointmentId: ${appointmentId}`);
+    console.log(`[DEBUG] handleAppointmentResponse: Transcribed Text: "${transcribedText}", Timed Out: ${timedOut}`);
+
     const twiml = new twilio.twiml.VoiceResponse();
 
-    twiml.say({ voice: 'alice' }, "Hello, this is Aiva, an automated assistant from Aiva.");
-    twiml.pause({ length: 1 });
-    twiml.say({ voice: 'alice' }, `I'm calling on behalf of ${appointment.patientName} to book an appointment regarding ${appointment.reasonForAppointment}.`);
-    
-    twiml.say({ voice: 'alice' }, `Is this time okay, or do you have another preference? Please speak after the tone.`);
-    
-    twiml.record({
-        action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
-        maxLength: 30,
-        finishOnKey: '#',
-        playBeep: true,
-        trim: 'trim-silence'
-    });
+    try {
+        const appointmentDocRef = await getAppointmentRef(appointmentId);
 
-    twiml.say('We did not receive a response. Goodbye.');
-    twiml.hangup();
-    
-    return twiml;
-}
-
-export async function handleAppointmentResponse(appointmentId, recordingUrl) {
-    if (!appointmentId || !recordingUrl) throw new Error('Missing appointmentId or recordingUrl.');
-
-    const appointmentDocRef = await getAppointmentRef(appointmentId);
-
-    const audioResponse = await axios({
-        method: 'get',
-        url: `${recordingUrl}.wav`,
-        responseType: 'arraybuffer',
-        auth: {
-            username: process.env.TWILIO_ACCOUNT_SID,
-            password: process.env.TWILIO_AUTH_TOKEN
+        if (timedOut) {
+            console.log(`[INFO] handleAppointmentResponse: Call timed out.`);
+            twiml.say("I didn't hear anything. I will try to call back later. Goodbye.");
+            twiml.hangup();
+            await appointmentDocRef.update({ status: 'failed', failureReason: 'Call timed out without a response.' });
+            return twiml;
         }
-    });
-    const audioBuffer = Buffer.from(audioResponse.data);
 
-    const transcribedText = await generateGeminiAudioTranscription(audioBuffer, 'audio/wav');
+        if (!transcribedText) {
+            console.warn(`[WARN] handleAppointmentResponse: Transcription was empty.`);
+            twiml.say("I'm having trouble understanding. Let's try that again.");
+            twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/appointmentCall?appointmentId=${appointmentId}`);
+            return twiml;
+        }
 
-    if (!transcribedText) {
-        await appointmentDocRef.update({ status: 'failed', failureReason: 'Transcription failed.' });
-        return;
-    }
+        const appointment = (await appointmentDocRef.get()).data();
+        const analysisPrompt = getTranscriptionAnalysisPrompt(transcribedText, appointment.lastSuggestion || `The proposed time`);
+        console.log(`[DEBUG] handleAppointmentResponse: Sending prompt to Gemini for analysis: ${analysisPrompt}`);
 
-    const analysisPrompt = getTranscriptionAnalysisPrompt(transcribedText);
-    const analysisResultRaw = await generateGeminiText(analysisPrompt);
-    const analysisResult = JSON.parse(analysisResultRaw.replace(/^```json\s*|```\s*$/g, ''));
+        const analysisResultRaw = await generateGeminiText(analysisPrompt);
+        console.log(`[DEBUG] handleAppointmentResponse: Raw analysis from Gemini: ${analysisResultRaw}`);
 
-    switch (analysisResult.status) {
-        case 'CONFIRMED':
-            await appointmentDocRef.update({
-                status: 'completed',
-                notes: `Appointment confirmed by voice. Transcription: "${transcribedText}"`
-            });
-            break;
-        case 'RESCHEDULE':
-            await appointmentDocRef.update({
-                status: 'failed_reschedule',
-                notes: analysisResult.suggestion,
-                failureReason: `Client suggested a new time. Transcription: "${transcribedText}"`
-            });
-            break;
-        case 'UNCLEAR':
-        default:
-            await appointmentDocRef.update({
-                status: 'failed',
-                failureReason: `Response was unclear. Transcription: "${transcribedText}"`
-            });
-            break;
+        let analysisResult;
+        try {
+            if (!analysisResultRaw) throw new Error("Gemini returned null or empty response.");
+            analysisResult = JSON.parse(analysisResultRaw.replace(/^```json\s*|```\s*$/g, ''));
+        } catch (e) {
+            console.error(`[ERROR] handleAppointmentResponse: Failed to parse JSON from Gemini. Error: ${e.message}. Raw response: "${analysisResultRaw}"`);
+            analysisResult = { status: 'UNCLEAR' }; // Default to 'UNCLEAR' if parsing fails
+        }
+
+        console.log(`[INFO] handleAppointmentResponse: Gemini analysis status: ${analysisResult.status}`);
+
+        switch (analysisResult.status) {
+            case 'CONFIRMED':
+                twiml.say("Great! Your appointment is confirmed. You will receive a confirmation message shortly. Goodbye.");
+                twiml.hangup();
+                await appointmentDocRef.update({ status: 'completed', notes: `Appointment confirmed. Transcription: "${transcribedText}"` });
+                break;
+            
+            case 'RESCHEDULE':
+                const reschedulePrompt = `The user wants to reschedule. Their response was: "${analysisResult.suggestion}". Propose a new, specific time (e.g., "tomorrow at 3 PM") and ask if that works.`;
+                const nextQuestion = await generateGeminiText(reschedulePrompt);
+                
+                await appointmentDocRef.update({ notes: `User wants to reschedule: "${analysisResult.suggestion}"`, lastSuggestion: nextQuestion });
+                
+                const gather = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleResponse?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
+                gather.say(nextQuestion);
+                twiml.say("Sorry, I didn't catch that.");
+                twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleResponse?appointmentId=${appointmentId}`);
+                break;
+
+            case 'UNCLEAR':
+            default:
+                const clarificationQuestion = "I'm sorry, I didn't understand that. Can you please say whether the proposed time works for you, or suggest another time?";
+                const gatherUnclear = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleResponse?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
+                gatherUnclear.say(clarificationQuestion);
+                twiml.say("I'm still having trouble. A human will contact you to finalize the appointment. Goodbye.");
+                twiml.hangup();
+                await appointmentDocRef.update({ status: 'failed', failureReason: `Response was unclear. Transcription: "${transcribedText}"` });
+                break;
+        }
+
+        console.log(`[DEBUG] handleAppointmentResponse: Final TwiML: ${twiml.toString()}`);
+        return twiml;
+
+    } catch (error) {
+        console.error(`[ERROR] handleAppointmentResponse: An unexpected error occurred for appointmentId: ${appointmentId}. Error: ${error.message}`);
+        console.error(error.stack); // Log the full stack trace for detailed debugging
+        twiml.say("Sorry, an error occurred. Goodbye.");
+        twiml.hangup();
+        return twiml;
     }
 }
-
 // --- NEW: Function to handle call status updates ---
 export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
     if (!appointmentId) return;
