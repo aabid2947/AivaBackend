@@ -4,7 +4,6 @@ import { db } from '../config/firebaseAdmin.js';
 import { generateGeminiAudioTranscription, generateGeminiText } from '../utils/geminiClient.js';
 import axios from 'axios';
 
-// --- (Helper functions like getTranscriptionAnalysisPrompt and getAppointmentRef remain the same) ---
 const getTranscriptionAnalysisPrompt = (transcribedText, currentSuggestion) => {
     return `You are an AI assistant helping to book an appointment.
     The user was asked about a proposed appointment time: "${currentSuggestion}".
@@ -19,18 +18,20 @@ const getTranscriptionAnalysisPrompt = (transcribedText, currentSuggestion) => {
 };
 
 async function getAppointmentRef(appointmentId) {
-    console.log(`[INFO] getAppointmentRef: Searching for appointmentId: ${appointmentId}`);
-    const snapshot = await db.collectionGroup('appointments').where('__name__', '==', appointmentId).limit(1).get();
-    if (snapshot.empty) {
-        console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}`);
+    console.log(`[INFO] getAppointmentRef: Attempting to get direct reference for appointmentId: ${appointmentId}`);
+    const docPath = `appointments/${appointmentId}`;
+    const appointmentRef = db.doc(docPath);
+    const docSnapshot = await appointmentRef.get();
+
+    if (!docSnapshot.exists) {
+        console.error(`[ERROR] getAppointmentRef: No document found at path: ${docPath}`);
         throw new Error(`Could not find appointment ${appointmentId}`);
     }
-    console.log(`[INFO] getAppointmentRef: Found appointment.`);
-    return snapshot.docs[0].ref;
+    
+    console.log(`[INFO] getAppointmentRef: Successfully found appointment at path: ${docPath}`);
+    return appointmentRef;
 }
 
-
-// --- CORE TWILIO LOGIC with Enhanced Logging ---
 
 export async function initiateAppointmentFlow(appointmentId, initialMessage) {
     console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
@@ -50,20 +51,17 @@ export async function initiateAppointmentFlow(appointmentId, initialMessage) {
         
         let firstQuestion;
         
-        // --- FIXED: Dynamically generate the question with correct name and time ---
         if (initialMessage) {
             firstQuestion = initialMessage;
         } else {
             const scheduleTime = appointment.scheduleTime.toDate();
-            // Format the time into a natural-sounding phrase (e.g., "Monday at 5:00 PM")
             const formattedTime = scheduleTime.toLocaleString('en-US', {
                 weekday: 'long',
                 hour: 'numeric',
                 minute: 'numeric',
                 hour12: true
             });
-            // Use `appointment.userName` instead of the incorrect `appointment.patientName`
-            firstQuestion = `I'm calling on behalf of ${appointment.userName} to book an appointment regarding ${appointment.reasonForAppointment}. The proposed time is ${formattedTime}. Is this okay?`; //
+            firstQuestion = `I'm calling on behalf of ${appointment.userName} to book an appointment regarding ${appointment.reasonForAppointment}. The proposed time is ${formattedTime}. Is this okay?`;
         }
 
 
@@ -126,7 +124,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             analysisResult = JSON.parse(analysisResultRaw.replace(/^```json\s*|```\s*$/g, ''));
         } catch (e) {
             console.error(`[ERROR] handleAppointmentResponse: Failed to parse JSON from Gemini. Error: ${e.message}. Raw response: "${analysisResultRaw}"`);
-            analysisResult = { status: 'UNCLEAR' }; // Default to 'UNCLEAR' if parsing fails
+            analysisResult = { status: 'UNCLEAR' };
         }
 
         console.log(`[INFO] handleAppointmentResponse: Gemini analysis status: ${analysisResult.status}`);
@@ -166,26 +164,23 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
 
     } catch (error) {
         console.error(`[ERROR] handleAppointmentResponse: An unexpected error occurred for appointmentId: ${appointmentId}. Error: ${error.message}`);
-        console.error(error.stack); // Log the full stack trace for detailed debugging
+        console.error(error.stack);
         twiml.say("Sorry, an error occurred. Goodbye.");
         twiml.hangup();
         return twiml;
     }
 }
-// --- NEW: Function to handle call status updates ---
 export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
     if (!appointmentId) return;
 
     const appointmentDocRef = await getAppointmentRef(appointmentId);
     let failureReason = null;
 
-    // Handle Answering Machine Detection results
     if (answeredBy && answeredBy === 'machine_start') {
         failureReason = 'Call answered by voicemail.';
         console.log(`Voicemail detected for appointment ${appointmentId}.`);
     }
 
-    // Handle final call statuses
     switch (callStatus) {
         case 'busy':
             failureReason = 'The line was busy.';
@@ -197,13 +192,11 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
             failureReason = 'The call could not be connected.';
             break;
         case 'completed':
-            // If the call was completed but we already have a status from transcription, don't overwrite it.
             const currentDoc = await appointmentDocRef.get();
             if (currentDoc.data().status === 'calling') {
-                // This means the recording webhook didn't fire or complete.
                 await appointmentDocRef.update({ status: 'failed', failureReason: 'Call ended without a clear response.' });
             }
-            return; // Exit, as 'completed' is a final state handled by the recording logic.
+            return;
     }
 
     if (failureReason) {

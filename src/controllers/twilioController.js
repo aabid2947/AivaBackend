@@ -2,7 +2,6 @@
 import twilio from 'twilio';
 import * as twilioCallService from '../services/twilioCallService.js';
 
-// Controller to generate the initial TwiML for the call
 export async function generateInitialCallTwiML(req, res) {
     const { appointmentId } = req.query; 
 
@@ -20,7 +19,6 @@ export async function generateInitialCallTwiML(req, res) {
     }
 }
 
-// Controller to process the audio recording from the call
 export async function processCallRecording(req, res) {
     const { appointmentId } = req.query;
     const recordingUrl = req.body.RecordingUrl;
@@ -40,16 +38,17 @@ export async function processCallRecording(req, res) {
     }
 }
 
-// --- NEW: Controller to handle call status updates ---
 export async function handleCallStatusUpdate(req, res) {
     const { appointmentId } = req.query;
     const { CallStatus, AnsweredBy } = req.body;
 
+    console.log(`[INFO] Call Status Webhook: Received status '${CallStatus}' for appointmentId: ${appointmentId}. AnsweredBy: '${AnsweredBy || 'N/A'}'.`);
+
     try {
         await twilioCallService.updateCallStatus(appointmentId, CallStatus, AnsweredBy);
-        res.status(200).send(); // Acknowledge receipt of the webhook
+        res.status(200).send('OK');
     } catch (error) {
-        console.error(`Error updating call status for appointment ${appointmentId}:`, error);
-        res.status(500).send();
+        console.error(`[ERROR] handleCallStatusUpdate: Failed to process status for appointment ${appointmentId}. Error: ${error.message}`);
+        res.status(500).send('Error processing status update.');
     }
 }

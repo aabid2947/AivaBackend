@@ -86,8 +86,8 @@ export const test = async () => {
     console.log('Querying for pending appointments...');
     // --- UPDATED: Query now uses the correct fields 'status' and 'scheduleTime' ---
     const appointmentsRef = db.collectionGroup('appointments')
-        .where('status', '==', 'pending')
-        .where('scheduleTime', '<=', now); 
+        // .where('status', '==', 'pending')
+        // .where('scheduleTime', '<=', now); 
         
     const snapshot = await appointmentsRef.get();
     
@@ -107,7 +107,6 @@ export const test = async () => {
         const appointmentId = doc.id;
 
         console.log(`--- Processing Appointment ${appointmentId} ---`);
-        // --- UPDATED: Log now uses the correct 'scheduleTime' field ---
         console.log(`Appointment Details: User ID - ${appointment.userId}, Contact - ${appointment.bookingContactNumber}, Scheduled Call Time - ${appointment.scheduleTime ? appointment.scheduleTime.toDate().toISOString() : 'N/A'}`);
 
         try {
@@ -124,7 +123,6 @@ export const test = async () => {
 
             await client.calls.create({
                 url: webhookUrl,
-                // --- UPDATED: 'to' number is now dynamic from the database record ---
                 to: appointment.bookingContactNumber,
                 from: process.env.TWILIO_PHONE_NUMBER,
                 statusCallback: statusCallbackUrl,
