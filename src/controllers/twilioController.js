@@ -20,7 +20,7 @@ export async function generateInitialCallTwiML(req, res) {
     }
 }
 
-// --- NEW: Replaces processCallRecording to handle transcribed speech from <Gather> ---
+// Replaces processCallRecording to handle transcribed speech from <Gather>
 export async function handleSpokenResponse(req, res) {
     const { appointmentId } = req.query;
     const transcribedText = req.body.SpeechResult;
@@ -41,6 +41,29 @@ export async function handleSpokenResponse(req, res) {
         res.send(twiml.toString());
     }
 }
+
+// --- ADDED: Controller function for handling the final confirmation ---
+export async function handleFinalConfirmation(req, res) {
+    const { appointmentId, timeToConfirm } = req.query;
+    const transcribedText = req.body.SpeechResult;
+    const timedOut = req.query.timedOut === 'true';
+
+    console.log(`[INFO] handleFinalConfirmation: Appt ${appointmentId}. Timed Out: ${timedOut}. Transcription: "${transcribedText}"`);
+
+    try {
+        const twiml = await twilioCallService.handleConfirmationResponse(appointmentId, transcribedText, timeToConfirm, timedOut);
+        res.type('text/xml');
+        res.send(twiml.toString());
+    } catch (error) {
+        console.error(`Error handling final confirmation for appointment ${appointmentId}:`, error);
+        const twiml = new twilio.twiml.VoiceResponse();
+        twiml.say('Sorry, an internal error occurred. Goodbye.');
+        twiml.hangup();
+        res.type('text/xml');
+        res.send(twiml.toString());
+    }
+}
+
 
 // Controller to handle call status updates
 export async function handleCallStatusUpdate(req, res) {
