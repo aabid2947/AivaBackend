@@ -8,7 +8,8 @@ export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetai
 - "userContact": The phone number or email of the patient.
 - "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
 - "reasonForAppointment": The reason for the appointment.
-- "reminder_iso_string_with_offset": The full date and time for the call as a single ISO 8601 string including the timezone offset.
+- "reminder_iso_string_with_offset": The full date and time for when the AI should MAKE THE CALL, as a single ISO 8601 string including the timezone offset. This is NOT the final appointment time.
+- "extraDetails": Any other specific instructions or details for the booking (e.g., "ask for Dr. Smith", "mention it's for a follow-up"). This is optional.
 
 The assistant has already collected some information:
 ${detailsString}
@@ -18,12 +19,13 @@ The user just sent a new message: "${userMessage}"
 Analyze the new message to extract or update the details.
 - **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID".
 - Today's date is ${new Date().toDateString()}.
-- The user is in the EAT (East Africa Time UTC+3 ) timezone. When they say "6:45 PM", it means 18:45 in their local time.
+- The user is in the EAT (East Africa Time UTC+3 ) timezone.
 - Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
 
 Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
 Ensure the output is ONLY the JSON object.`;
 }
+
 
 
 // Other prompts remain unchanged
