@@ -76,6 +76,7 @@ console.log('Appointment scheduler initialized. Waiting for jobs...');
 //     console.log('--- Cron Job Finished: All appointments processed ---');
 // });
 
+
 export const test = async () => {
     console.log('--- Cron Job Started: Running appointment check cron job ---');
     const now = new Date();
@@ -83,13 +84,14 @@ export const test = async () => {
 
     // Query for pending appointments where the preferred call time is now or in the past
     console.log('Querying for pending appointments...');
+    // --- UPDATED: Query now uses the correct fields 'status' and 'scheduleTime' ---
     const appointmentsRef = db.collectionGroup('appointments')
-        // .where('status', '==', 'pending')
-        // .where('reminder_iso_string_with_offset', '<=', now); // Changed to <= to include past times
+        .where('status', '==', 'pending')
+        .where('scheduleTime', '<=', now); 
         
     const snapshot = await appointmentsRef.get();
     
-    console.log(`Firestore Snapshot received. Number of documents: ${snapshot}`);
+    console.log(`Firestore Snapshot received. Number of documents: ${snapshot.size}`);
 
     if (snapshot.empty) {
         console.log('No pending appointments to process at this time.');
@@ -101,19 +103,18 @@ export const test = async () => {
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
     for (const doc of snapshot.docs) {
-        console.log(`Processing appointment with ID: ${doc}`);
         const appointment = doc.data();
         const appointmentId = doc.id;
 
         console.log(`--- Processing Appointment ${appointmentId} ---`);
-        // console.log(`Appointment Details: User ID - ${appointment.userId}, Contact - ${appointment.bookingContactNumber}, Preferred Call Time - ${appointment.reminder_iso_string_with_offset ? appointment.reminder_iso_string_with_offset.toDate().toISOString() : 'N/A'}`);
+        // --- UPDATED: Log now uses the correct 'scheduleTime' field ---
+        console.log(`Appointment Details: User ID - ${appointment.userId}, Contact - ${appointment.bookingContactNumber}, Scheduled Call Time - ${appointment.scheduleTime ? appointment.scheduleTime.toDate().toISOString() : 'N/A'}`);
 
         try {
             console.log(`Attempting to update status to 'calling' for appointment ${appointmentId}...`);
             await doc.ref.update({ status: 'calling' });
             console.log(`Status updated to 'calling' for appointment ${appointmentId}.`);
             
-            // --- UPDATED: Using dynamic URL and status callbacks ---
             const webhookUrl = `${process.env.API_BASE_URL}/api/twilio/twiML/appointmentCall?appointmentId=${appointmentId}`;
             const statusCallbackUrl = `${process.env.API_BASE_URL}/api/twilio/twiML/callStatus?appointmentId=${appointmentId}`;
 
@@ -122,16 +123,15 @@ export const test = async () => {
             console.log(`Status Callback URL: ${statusCallbackUrl}`);
 
             await client.calls.create({
-                url: webhookUrl, // Use a URL to generate dynamic TwiML
-                // to: appointment.bookingContactNumber,
-                to:"+918264782290",
+                url: webhookUrl,
+                // --- UPDATED: 'to' number is now dynamic from the database record ---
+                to: appointment.bookingContactNumber,
                 from: process.env.TWILIO_PHONE_NUMBER,
-              
                 statusCallback: statusCallbackUrl,
-                statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'], // Events to track
-                machineDetection: 'Enable', // Enable Answering Machine Detection
-                asyncAmd: true, // Use asynchronous AMD for better accuracy
-                asyncAmdStatusCallback: statusCallbackUrl, // Send AMD result to the same handler
+                statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+                machineDetection: 'Enable',
+                asyncAmd: true,
+                asyncAmdStatusCallback: statusCallbackUrl,
             });
 
             console.log(`Successfully initiated call for appointment ${appointmentId}. Call details sent to Twilio.`);

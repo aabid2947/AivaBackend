@@ -48,7 +48,24 @@ export async function initiateAppointmentFlow(appointmentId, initialMessage) {
         twiml.say({ voice: 'alice' }, "Hello, this is an automated assistant from Aiva.");
         twiml.pause({ length: 1 });
         
-        const firstQuestion = initialMessage || `I'm calling on behalf of ${appointment.patientName} to book an appointment regarding ${appointment.reasonForAppointment}. The proposed time is [time]. Is this okay?`;
+        let firstQuestion;
+        
+        // --- FIXED: Dynamically generate the question with correct name and time ---
+        if (initialMessage) {
+            firstQuestion = initialMessage;
+        } else {
+            const scheduleTime = appointment.scheduleTime.toDate();
+            // Format the time into a natural-sounding phrase (e.g., "Monday at 5:00 PM")
+            const formattedTime = scheduleTime.toLocaleString('en-US', {
+                weekday: 'long',
+                hour: 'numeric',
+                minute: 'numeric',
+                hour12: true
+            });
+            // Use `appointment.userName` instead of the incorrect `appointment.patientName`
+            firstQuestion = `I'm calling on behalf of ${appointment.userName} to book an appointment regarding ${appointment.reasonForAppointment}. The proposed time is ${formattedTime}. Is this okay?`; //
+        }
+
 
         const gather = twiml.gather({
             input: 'speech',
