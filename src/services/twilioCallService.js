@@ -1,9 +1,51 @@
 // src/services/twilioCallService.js
 import twilio from 'twilio';
-import { db } from '../config/firebaseAdmin.js';
+import { db, admin } from '../config/firebaseAdmin.js'; // Import admin for messaging
 import { generateGeminiText } from '../utils/geminiClient.js';
 
-// --- NEW PROMPT for analyzing open-ended time suggestions ---
+// --- Helper function to send FCM notification for confirmed appointments ---
+async function sendAppointmentConfirmationNotification(userId, appointment) {
+    try {
+        const userRef = db.collection('users').doc(userId);
+        const userDoc = await userRef.get();
+        if (!userDoc.exists || !userDoc.data().fcmToken) {
+            console.warn(`[FCM] User ${userId} does not have an FCM token. Skipping appointment confirmation notification.`);
+            return;
+        }
+        const fcmToken = userDoc.data().fcmToken;
+
+        // Format the confirmed time for the notification body
+        const confirmedTime = new Date(appointment.finalAppointmentTime).toLocaleString('en-US', {
+            weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true
+        });
+
+        let notificationBody = `Confirmed for ${confirmedTime} with ${appointment.userName}.`;
+        if (appointment.extraDetails) {
+            notificationBody += ` Note: ${appointment.extraDetails}`;
+        }
+
+        const message = {
+            notification: {
+                title: 'Appointment Confirmed!',
+                body: notificationBody,
+            },
+            token: fcmToken,
+            data: {
+                type: 'APPOINTMENT_CONFIRMED',
+                appointmentId: appointment.id, // Assuming the appointment object has its own ID
+            }
+        };
+
+        await admin.messaging().send(message);
+        console.log(`[FCM] Successfully sent appointment confirmation notification to user ${userId}.`);
+
+    } catch (error) {
+        console.error(`[FCM] Failed to send FCM notification for user ${userId}:`, error);
+    }
+}
+
+
+// --- PROMPT for analyzing open-ended time suggestions ---
 const getAppointmentTimeSuggestionAnalysisPrompt = (transcribedText, userName, reason) => {
     return `You are an intelligent appointment booking assistant. You have just asked the user "What time would be best for the appointment?".
     The appointment is for "${userName}" regarding "${reason}".
@@ -65,11 +107,9 @@ export async function initiateAppointmentFlow(appointmentId) {
         const appointment = (await appointmentRef.get()).data();
         await appointmentRef.update({ retries: 0 });
 
-        let initialGreeting = `Hello, this is an automated assistant from Aiva, calling on behalf of ${appointment.userName} to schedule an appointment regarding ${appointment.reasonForAppointment}.`;
-        if (appointment.extraDetails) {
-            initialGreeting += ` I also have a special instruction: ${appointment.extraDetails}.`;
-        }
-        
+        // --- UPDATED: The "extraDetails" are no longer announced in the initial greeting. ---
+        // They are kept for contextual question answering or logging.
+        const initialGreeting = `Hello, this is an automated assistant from Aiva, calling on behalf of ${appointment.userName} to schedule an appointment regarding ${appointment.reasonForAppointment}.`;
         const firstQuestion = "What time would be best for the appointment?";
 
         const gather = twiml.gather({
@@ -132,9 +172,18 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                  break;
 
             case 'QUESTION':
-                const answerPrompt = `A user is asking a question about scheduling an appointment. Answer their question concisely, then ask again "What time would be best for the appointment?".
-                Details: For ${appointment.userName} regarding ${appointment.reasonForAppointment}.
-                User's Question: "${analysisResult.question}"`;
+                // --- UPDATED: Prompt is now given more context to answer questions about user info ---
+                const answerPrompt = `You are a helpful AI assistant scheduling an appointment. Answer the user's question concisely, then ask again "What time would be best for the appointment?".
+
+                Appointment Details:
+                - Patient Name: ${appointment.userName}
+                - Reason for Call: ${appointment.reasonForAppointment}
+                - Patient Contact Number: ${appointment.userContact || 'Not provided'}
+                - Special Instructions: ${appointment.extraDetails || 'None'}
+
+                User's Question: "${analysisResult.question}"
+                
+                Your concise answer:`;
                 
                 const answerText = await generateGeminiText(answerPrompt);
                 const gatherQuestion = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
@@ -148,13 +197,17 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 const retries = (appointment.retries || 0) + 1;
                 await appointmentRef.update({ retries: retries });
 
-                if (retries > 1) {
-                    twiml.say("I'm still having trouble. A human will contact you shortly to finalize the appointment. Goodbye.");
+                if (retries >= 3) { // Allow for two retries, hang up on the third failure.
+                    twiml.say("I seem to be having trouble understanding. A human will contact you shortly to finalize the appointment. Goodbye.");
                     twiml.hangup();
-                    await appointmentRef.update({ status: 'failed', failureReason: `Response was repeatedly unclear. Last transcription: "${transcribedText}"` });
-                } else {
-                    const gatherUnclear = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
-                    gatherUnclear.say("I'm sorry, I didn't quite understand. Could you please suggest a date and time for the appointment?");
+                    await appointmentRef.update({ status: 'failed', failureReason: `Response was repeatedly unclear after multiple attempts. Last transcription: "${transcribedText}"` });
+                } else if (retries === 2) { // This is the second retry (the last chance).
+                    const gatherLastTry = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
+                    gatherLastTry.say("My apologies, I'm still not able to understand. Let's try one last time. Could you please state the full date and time you would like for the appointment?");
+                    twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
+                } else { // This is the first retry.
+                    const gatherFirstRetry = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
+                    gatherFirstRetry.say("I'm sorry, I didn't quite understand. Could you please repeat the date and time for the appointment?");
                     twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
                 }
                 break;
@@ -184,11 +237,19 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
     if (confirmation === 'AFFIRMATIVE') {
         twiml.say("Great! Your appointment is confirmed. You will receive a confirmation message shortly. Goodbye.");
         twiml.hangup();
+        
+        const finalAppointmentTime = new Date(timeToConfirmISO);
         await appointmentRef.update({ 
             status: 'completed', 
-            finalAppointmentTime: new Date(timeToConfirmISO),
-            notes: `Appointment confirmed for ${new Date(timeToConfirmISO).toLocaleString()}. Transcription: "${transcribedText}"` 
+            finalAppointmentTime: finalAppointmentTime,
+            notes: `Appointment confirmed for ${finalAppointmentTime.toLocaleString()}. Transcription: "${transcribedText}"` 
         });
+
+        // --- ADDED: Send FCM notification on successful confirmation ---
+        const appointmentDoc = await appointmentRef.get();
+        const appointmentData = { id: appointmentDoc.id, ...appointmentDoc.data() };
+        await sendAppointmentConfirmationNotification(appointmentData.userId, appointmentData);
+
     } else if (confirmation === 'NEGATIVE') {
         const gatherRetry = twiml.gather({ input: 'speech', action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, speechTimeout: 'auto' });
         gatherRetry.say("My apologies for the mistake. Let's try again. What time would be best for the appointment?");

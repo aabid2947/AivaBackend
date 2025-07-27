@@ -5,7 +5,7 @@ export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetai
   const detailsString = JSON.stringify(existingDetails, null, 2);
   return `An AI assistant is helping a user book an appointment. It needs to collect:
 - "userName": The full name of the person for whom the appointment is.
-- "userContact": The phone number or email of the patient.
+- "userContact": The phone number of the patient. This is important so the clinic can contact them.
 - "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
 - "reasonForAppointment": The reason for the appointment.
 - "reminder_iso_string_with_offset": The full date and time for when the AI should MAKE THE CALL, as a single ISO 8601 string including the timezone offset. This is NOT the final appointment time.
@@ -22,8 +22,7 @@ Analyze the new message to extract or update the details.
 - The user is in the EAT (East Africa Time UTC+3 ) timezone.
 - Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
 
-Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
-Ensure the output is ONLY the JSON object.`;
+Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.`;
 }
 
 
@@ -55,7 +54,6 @@ Example Output:
 Ensure the output is ONLY the JSON object.`;
 }
 
-// --- NEW PROMPT to get intent and details simultaneously ---
 export function getInitialIntentAndDetailsExtractionPrompt(userMessage) {
   return `Analyze the user's message to determine their primary intent and extract any relevant details.
 Return a single, valid JSON object with two keys: "intent" and "details".
@@ -96,7 +94,7 @@ Example for "hi":
 Ensure the output is ONLY the JSON object.`;
 }
 
-// --- NEW PROMPT to detect conversation closing remarks ---
+
 export function getClosingRemarkClassificationPrompt(userMessage) {
   return `A user has just finished a task with an AI assistant. The assistant asked "Is there anything else?".
 The user replied: "${userMessage}"
