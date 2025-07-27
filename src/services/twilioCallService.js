@@ -18,18 +18,23 @@ const getTranscriptionAnalysisPrompt = (transcribedText, currentSuggestion) => {
 };
 
 async function getAppointmentRef(appointmentId) {
-    console.log(`[INFO] getAppointmentRef: Attempting to get direct reference for appointmentId: ${appointmentId}`);
-    const docPath = `appointments/${appointmentId}`;
-    const appointmentRef = db.doc(docPath);
-    const docSnapshot = await appointmentRef.get();
+    console.log(`[INFO] getAppointmentRef: Searching collection group 'appointments' for document with ID: ${appointmentId}`);
 
-    if (!docSnapshot.exists) {
-        console.error(`[ERROR] getAppointmentRef: No document found at path: ${docPath}`);
+    // WARNING: This is an inefficient query that scans all documents in the 'appointments'
+    // collection group. This is required by the current database structure.
+    // FOR BETTER PERFORMANCE: Add the appointment ID as a field within the document and create a
+    // Firestore index for that field to allow for a direct query.
+    const snapshot = await db.collectionGroup('appointments').get();
+    
+    const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
+
+    if (!foundDoc) {
+        console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId} in any 'appointments' subcollection.`);
         throw new Error(`Could not find appointment ${appointmentId}`);
     }
     
-    console.log(`[INFO] getAppointmentRef: Successfully found appointment at path: ${docPath}`);
-    return appointmentRef;
+    console.log(`[INFO] getAppointmentRef: Successfully found appointment at path: ${foundDoc.ref.path}`);
+    return foundDoc.ref;
 }
 
 
