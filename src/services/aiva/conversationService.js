@@ -46,7 +46,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
   switch (conversationState.currentState) {
     case ConversationStates.AWAITING_USER_REQUEST:
     case ConversationStates.AWAITING_CLARIFICATION_FOR_NEGATIVE_INTENT:
-      // Handle graceful closing of conversation
       if (conversationState.taskJustCompleted) {
         await updateConversationState(userId, chatId, nextState, { taskJustCompleted: false });
         const closingRemarkRaw = await generateGeminiText(Prompts.getClosingRemarkClassificationPrompt(userMessageContent));
@@ -57,7 +56,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         }
       }
 
-      // Use new prompt to get intent and details at once
       const extractedDataRaw = await generateGeminiText(Prompts.getInitialIntentAndDetailsExtractionPrompt(userMessageContent));
       let intent, details;
       try {
@@ -65,7 +63,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         ({ intent, details } = JSON.parse(cleanedJson));
       } catch (error) {
         console.error("Failed to parse initial intent and details:", error, extractedDataRaw);
-        intent = IntentCategories.CONVERSATIONAL_QUERY; // Fallback
+        intent = IntentCategories.CONVERSATIONAL_QUERY;
         details = {};
       }
 
@@ -85,7 +83,42 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           nextState = ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT;
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
         }
-      } else if (intent && [IntentCategories.MONITOR_EMAIL, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(intent)) {
+      } else if (intent === IntentCategories.APPOINTMENT_CALL) {
+        // **FIXED**: Handle appointment details provided in the initial message.
+        if (details.userName && details.bookingContactNumber && details.reasonForAppointment && details.reminder_iso_string_with_offset) {
+          const callDateTime = new Date(details.reminder_iso_string_with_offset);
+          if (isNaN(callDateTime.getTime())) {
+            aivaResponseContent = "I can help book that appointment, but I had trouble with the date and time provided. When should I make the call?";
+            details.reminder_iso_string_with_offset = null;
+            nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+            await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
+          } else {
+            aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${details.userName}, I will call ${details.bookingContactNumber} regarding "${details.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
+            nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
+            await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
+          }
+        } else if (details && Object.values(details).some(v => v !== null)) {
+          const appointmentFields = ['userName', 'bookingContactNumber', 'reasonForAppointment', 'reminder_iso_string_with_offset'];
+          const missingApptDetails = appointmentFields.filter(key => !details[key]);
+          let followupQuestion = "Okay, I can help book that appointment. ";
+          if (missingApptDetails.includes('userName')) {
+            followupQuestion += "What is the full name of the person this appointment is for?";
+          } else if (missingApptDetails.includes('bookingContactNumber')) {
+            followupQuestion += "What's the phone number I should call to book the appointment?";
+          } else if (missingApptDetails.includes('reasonForAppointment')) {
+            followupQuestion += "What is the reason for this appointment?";
+          } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
+            followupQuestion += "And when would be a good time for me to make this call?";
+          }
+          aivaResponseContent = followupQuestion.trim();
+          nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
+        } else {
+          aivaResponseContent = "It sounds like you want help with booking an appointment. Is that correct?";
+          nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
+          await updateConversationState(userId, chatId, nextState, { lastProposedIntent: intent });
+        }
+      } else if (intent && [IntentCategories.MONITOR_EMAIL, IntentCategories.SUMMARIZE_CONTENT].includes(intent)) {
         let intentSummary = `It sounds like you want help with ${intent.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
         aivaResponseContent = `${intentSummary}`;
         nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
@@ -136,11 +169,13 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES:
-      // UPDATED: Added pre-emptive check for task switching
-      const newIntentRawFromEmail = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
-      const newIntentFromEmail = newIntentRawFromEmail ? newIntentRawFromEmail.trim().toUpperCase() : null;
+        // **FIXED**: Replaced context-less intent check with a context-aware one.
+        const allowedEmailSwitches = [IntentCategories.SET_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT];
+        const emailSwitchPrompt = `The user is currently setting up email monitoring. Their latest message is: "${userMessageContent}". Does this message represent a clear request to switch to a different task (${allowedEmailSwitches.join(', ')})? Or is it related to the email setup? If it's a clear task switch, return the new intent label. Otherwise, return 'CONTINUE'.`;
+        const newIntentRawFromEmail = await generateGeminiText(emailSwitchPrompt);
+        const newIntentFromEmail = newIntentRawFromEmail ? newIntentRawFromEmail.trim().toUpperCase() : null;
 
-      if (newIntentFromEmail && newIntentFromEmail !== IntentCategories.MONITOR_EMAIL && [IntentCategories.SET_REMINDER, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(newIntentFromEmail)) {
+      if (newIntentFromEmail && newIntentFromEmail !== 'CONTINUE' && allowedEmailSwitches.includes(newIntentFromEmail)) {
         aivaResponseContent = `It sounds like you want to switch to a new task: ${newIntentFromEmail.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
         nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: newIntentFromEmail });
@@ -174,17 +209,20 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const guidancePrompt = Prompts.getContextualGuidancePrompt(chatHistory, aivaQuestion, userMessageContent);
         aivaResponseContent = await generateGeminiText(guidancePrompt);
         nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
-      } else { // UNRELATED or task switch attempt was already handled
+      } else {
         aivaResponseContent = "I see. Let's focus on the email monitoring first. Would you like me to just notify you, or also help with replies?";
         nextState = ConversationStates.PROMPT_EMAIL_MONITORING_PREFERENCES;
       }
       break;
 
     case ConversationStates.PROCESSING_PATH_PAYMENT_REMINDER_DETAILS_PROMPT:
-      
-      const newIntentRawFromReminder = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
+      // **FIXED**: Replaced context-less intent check with a context-aware one.
+      const allowedReminderSwitches = [IntentCategories.MONITOR_EMAIL, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT];
+      const reminderSwitchPrompt = `The user is currently setting a reminder. Their latest message is: "${userMessageContent}". Does this message represent a clear request to switch to a different task (${allowedReminderSwitches.join(', ')})? Or is it a detail for the reminder? If it's a clear task switch, return the new intent label. Otherwise, return 'CONTINUE'.`;
+      const newIntentRawFromReminder = await generateGeminiText(reminderSwitchPrompt);
       const newIntentFromReminder = newIntentRawFromReminder ? newIntentRawFromReminder.trim().toUpperCase() : null;
-      if (newIntentFromReminder && newIntentFromReminder !== IntentCategories.SET_REMINDER && [IntentCategories.MONITOR_EMAIL, IntentCategories.APPOINTMENT_CALL, IntentCategories.SUMMARIZE_CONTENT].includes(newIntentFromReminder)) {
+
+      if (newIntentFromReminder && newIntentFromReminder !== 'CONTINUE' && allowedReminderSwitches.includes(newIntentFromReminder)) {
           aivaResponseContent = `It sounds like you want to switch to a new task: ${newIntentFromReminder.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
           await updateConversationState(userId, chatId, nextState, { lastProposedIntent: newIntentFromReminder });
@@ -251,7 +289,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const reminderRef = await db.collection('users').doc(userId).collection('paymentReminders').add(reminderDataToStore);
         aivaResponseContent = `Great! I've set the reminder for "${reminderDataToStore.taskDescription}". Is there anything else?`;
         nextState = ConversationStates.AWAITING_USER_REQUEST;
-        // UPDATED: Set flag for graceful closing
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, reminderDetails: {}, lastReminderId: reminderRef.id, taskJustCompleted: true });
       } else {
         aivaResponseContent = "My apologies. What would you like to change?";
@@ -261,10 +298,13 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       break;
 
     case ConversationStates.PROCESSING_APPOINTMENT_DETAILS:
-
-      const newIntentRawFromAppt = await generateGeminiText(Prompts.getInitialIntentClassificationPrompt(userMessageContent));
+      // **FIXED**: Replaced context-less intent check with a context-aware one.
+      const allowedApptSwitches = [IntentCategories.MONITOR_EMAIL, IntentCategories.SET_REMINDER, IntentCategories.SUMMARIZE_CONTENT];
+      const apptSwitchPrompt = `The user is currently scheduling an appointment. Their latest message is: "${userMessageContent}". Does this message represent a clear request to switch to a different task (${allowedApptSwitches.join(', ')})? Or is it likely a reply providing details for the appointment? If it's a clear switch, return the intent label (e.g., 'SET_REMINDER'). Otherwise, return 'CONTINUE'.`;
+      const newIntentRawFromAppt = await generateGeminiText(apptSwitchPrompt);
       const newIntentFromAppt = newIntentRawFromAppt ? newIntentRawFromAppt.trim().toUpperCase() : null;
-      if (newIntentFromAppt && newIntentFromAppt !== IntentCategories.APPOINTMENT_CALL && [IntentCategories.MONITOR_EMAIL, IntentCategories.SET_REMINDER, IntentCategories.SUMMARIZE_CONTENT].includes(newIntentFromAppt)) {
+
+      if (newIntentFromAppt && newIntentFromAppt !== 'CONTINUE' && allowedApptSwitches.includes(newIntentFromAppt)) {
           aivaResponseContent = `It sounds like you want to switch to a new task: ${newIntentFromAppt.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
           await updateConversationState(userId, chatId, nextState, { lastProposedIntent: newIntentFromAppt });
@@ -348,7 +388,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         const appointmentRef = await db.collection('users').doc(userId).collection('appointments').add(appointmentData);
         aivaResponseContent = `Great, I have all the details. I will make the call around the preferred time to book the appointment for ${finalApptDetails.userName}. I'll let you know how it goes. Is there anything else?`;
         nextState = ConversationStates.AWAITING_USER_REQUEST;
-        // UPDATED: Set flag for graceful closing
         await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, appointmentDetails: {}, lastAppointmentId: appointmentRef.id, taskJustCompleted: true });
       } else {
         aivaResponseContent = "My apologies. What would you like to change?";
