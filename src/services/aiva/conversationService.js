@@ -379,7 +379,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       confirmationMessage += ` Is all of this correct?`;
 
       aivaResponseContent = confirmationMessage;
-      nextState = ConversationStates.AWAITING_APPOINTPOINTMENT_CONFIRMATION;
+      nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
       await updateConversationState(userId, chatId, nextState, { appointmentDetails: finalApptDetailsFromState });
       break;
 
