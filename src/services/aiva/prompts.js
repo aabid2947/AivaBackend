@@ -1,7 +1,6 @@
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
 
-// --- UPDATED: Added phone number validation and country code instructions ---
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
   return `An AI assistant is helping a user book an appointment. It needs to collect:
@@ -9,7 +8,7 @@ export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetai
 - "userContact": The phone number or email of the patient.
 - "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
 - "reasonForAppointment": The reason for the appointment.
-- "reminder_iso_string_with_offset": The full date and time for the reminder as a single ISO 8601 string including the timezone offset. EX:  "reminder_iso_string_with_offset": "2025-07-05T18:45:00+03:00"
+- "reminder_iso_string_with_offset": The full date and time for the call as a single ISO 8601 string including the timezone offset.
 
 The assistant has already collected some information:
 ${detailsString}
@@ -19,6 +18,8 @@ The user just sent a new message: "${userMessage}"
 Analyze the new message to extract or update the details.
 - **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID".
 - Today's date is ${new Date().toDateString()}.
+- The user is in the EAT (East Africa Time UTC+3 ) timezone. When they say "6:45 PM", it means 18:45 in their local time.
+- Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
 
 Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.
 Ensure the output is ONLY the JSON object.`;

@@ -148,7 +148,8 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
           aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name and contact info (phone/email) of the person the appointment is for?";
           nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, preferredCallTime: null } });
+          // **FIXED**: Changed preferredCallTime to reminder_iso_string_with_offset for consistency.
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, reminder_iso_string_with_offset: null } });
 
         } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
           aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
@@ -304,7 +305,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       const newIntentRawFromAppt = await generateGeminiText(apptSwitchPrompt);
       const newIntentFromAppt = newIntentRawFromAppt ? newIntentRawFromAppt.trim().toUpperCase() : null;
 
-      if (newIntentFromAppt && newIntentFromAppt !== 'CONTINUE' && allowedApptSwitches.includes(newIntentFromAppt)) {
+      if (newIntentRawFromAppt && newIntentFromAppt !== 'CONTINUE' && allowedApptSwitches.includes(newIntentFromAppt)) {
           aivaResponseContent = `It sounds like you want to switch to a new task: ${newIntentFromAppt.toLowerCase().replace(/_/g, ' ')}. Is that correct?`;
           nextState = ConversationStates.AWAITING_AFFIRMATIVE_NEGATIVE;
           await updateConversationState(userId, chatId, nextState, { lastProposedIntent: newIntentFromAppt });
@@ -333,7 +334,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         break;
       }
 
-      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key]);
+      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key] && key !== 'userContact');
 
       if (missingApptDetails.length === 0) {
         const callDateTime = new Date(updatedApptDetails.reminder_iso_string_with_offset);
@@ -351,8 +352,6 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         let followupQuestion = "Thanks! ";
         if (missingApptDetails.includes('userName')) {
           followupQuestion += "What is the full name of the person this appointment is for?";
-        } else if (missingApptDetails.includes('userContact')) {
-          followupQuestion += "What is the user's contact number or email?";
         } else if (missingApptDetails.includes('bookingContactNumber')) {
           followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
         } else if (missingApptDetails.includes('reasonForAppointment')) {

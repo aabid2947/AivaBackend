@@ -83,7 +83,7 @@ export const test = async () => {
 
     // Query for pending appointments where the preferred call time is now or in the past
     console.log('Querying for pending appointments...');
-    const appointmentsRef = db.collectionGroup('appoitments')
+    const appointmentsRef = db.collectionGroup('appointments')
         // .where('status', '==', 'pending')
         // .where('reminder_iso_string_with_offset', '<=', now); // Changed to <= to include past times
         
@@ -101,11 +101,12 @@ export const test = async () => {
     const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
     for (const doc of snapshot.docs) {
+        console.log(`Processing appointment with ID: ${doc}`);
         const appointment = doc.data();
         const appointmentId = doc.id;
 
         console.log(`--- Processing Appointment ${appointmentId} ---`);
-        console.log(`Appointment Details: User ID - ${appointment.userId}, Contact - ${appointment.bookingContactNumber}, Preferred Call Time - ${appointment.preferredCallTime ? appointment.preferredCallTime.toDate().toISOString() : 'N/A'}`);
+        // console.log(`Appointment Details: User ID - ${appointment.userId}, Contact - ${appointment.bookingContactNumber}, Preferred Call Time - ${appointment.reminder_iso_string_with_offset ? appointment.reminder_iso_string_with_offset.toDate().toISOString() : 'N/A'}`);
 
         try {
             console.log(`Attempting to update status to 'calling' for appointment ${appointmentId}...`);
