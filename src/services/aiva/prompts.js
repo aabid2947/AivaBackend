@@ -1,5 +1,81 @@
+
 // src/services/aiva/prompts.js
 import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './constants.js';
+
+
+/**
+ * Creates a prompt to analyze the user's spoken response when asked to suggest an appointment time.
+ * @param {string} transcribedText - The text transcribed from the user's speech.
+ * @param {string} userName - The name of the person the appointment is for.
+ * @param {string} reasonForAppointment - The reason for the appointment.
+ * @returns {string} The generated prompt for the AI model.
+ */
+export function getAppointmentTimeSuggestionAnalysisPrompt(transcribedText, userName, reasonForAppointment) {
+    return `You are an AI assistant analyzing a user's response in an automated phone call.
+The call is on behalf of "${userName}" regarding "${reasonForAppointment}".
+The user was asked: "What time would be best for the appointment?"
+The user replied: "${transcribedText}"
+
+Your task is to analyze this response and classify it into one of the following statuses, returning ONLY a single valid JSON object.
+
+- **TIME_SUGGESTED**: The user proposed a specific date and/or time.
+- **CANNOT_SCHEDULE**: The user explicitly states they cannot or do not want to schedule now.
+- **QUESTION**: The user asks a question instead of providing a time.
+- **UNCLEAR**: The response is too vague, ambiguous, or irrelevant to be acted upon.
+
+Today's date is ${new Date().toDateString()}. The user is in the EAT (East Africa Time, UTC+3) timezone.
+
+Based on the user's reply, return a JSON object with the following structure:
+- If the status is 'TIME_SUGGESTED', include a "suggested_iso_string" with the full ISO 8601 date and time.
+- If the status is 'CANNOT_SCHEDULE', include a "reason".
+- If the status is 'QUESTION', include the "question".
+- If the status is 'UNCLEAR', no other fields are needed.
+
+Examples:
+- User: "Yeah, how about tomorrow at 3 PM?" -> {"status": "TIME_SUGGESTED", "suggested_iso_string": "2025-07-29T15:00:00+03:00"}
+- User: "I can't talk right now, I'm driving." -> {"status": "CANNOT_SCHEDULE", "reason": "User is driving."}
+- User: "Is the clinic open on Saturdays?" -> {"status": "QUESTION", "question": "Is the clinic open on Saturdays?"}
+- User: "I'm not sure." -> {"status": "UNCLEAR"}
+- User: "The weather is nice today." -> {"status": "UNCLEAR"}
+
+Return only the JSON object.`;
+}
+
+
+// --- NEW: A more advanced prompt for analyzing the final confirmation response ---
+export function getConfirmationAnalysisPrompt(userReply) {
+    return `You are analyzing the user's response to a confirmation question ("Is this correct?").
+    The user's reply is: "${userReply}"
+
+    Analyze the reply and return ONLY a JSON object with two keys:
+    1. "confirmation_status": Classify the core sentiment as "AFFIRMATIVE", "NEGATIVE", or "UNCLEAR".
+    2. "follow_up_question": If the user asks a follow-up question after their confirmation/negation, extract that question as a string. If there is no follow-up question, this value should be null.
+
+    Examples:
+    - User reply: "Yes, that's correct." -> {"confirmation_status": "AFFIRMATIVE", "follow_up_question": null}
+    - User reply: "Yep, and can you tell me the number again?" -> {"confirmation_status": "AFFIRMATIVE", "follow_up_question": "Can you tell me the number again?"}
+    - User reply: "No, that's wrong." -> {"confirmation_status": "NEGATIVE", "follow_up_question": null}
+    - User reply: "I'm not sure" -> {"confirmation_status": "UNCLEAR", "follow_up_question": null}
+
+    Return only the JSON object.`;
+}
+
+// --- NEW: A prompt to generate an answer to a follow-up question ---
+export function getFollowUpQuestionAnswerPrompt(appointmentDetails, question) {
+    return `You are a helpful AI assistant who has just confirmed an appointment. The user had a quick follow-up question. Provide a concise and direct answer.
+
+    Here is the context you have:
+    - Patient Name: ${appointmentDetails.userName}
+    - Patient Contact: ${appointmentDetails.userContact || 'Not provided'}
+    - Call-in Number for Clinic: ${appointmentDetails.bookingContactNumber}
+    - Reason for Appointment: ${appointmentDetails.reasonForAppointment}
+    - Special Instructions on file: ${appointmentDetails.extraDetails || 'None'}
+
+    The user's follow-up question is: "${question}"
+
+    Generate a helpful, brief answer to this question. For example, if they ask for "the number", provide the clinic's number.`;
+}
+
 
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
@@ -54,6 +130,7 @@ Example Output:
 Ensure the output is ONLY the JSON object.`;
 }
 
+// --- NEW PROMPT to get intent and details simultaneously ---
 export function getInitialIntentAndDetailsExtractionPrompt(userMessage) {
   return `Analyze the user's message to determine their primary intent and extract any relevant details.
 Return a single, valid JSON object with two keys: "intent" and "details".
@@ -81,7 +158,7 @@ Example for "remind me to pay college fees tomorrow at 5pm":
   "intent": "${IntentCategories.SET_REMINDER}",
   "details": {
     "task_description": "Pay college fees",
-    "reminder_iso_string_with_offset": "2025-07-17T17:00:00+03:00"
+    "reminder_iso_string_with_offset": "2025-07-29T17:00:00+03:00" 
   }
 }
 
@@ -94,7 +171,7 @@ Example for "hi":
 Ensure the output is ONLY the JSON object.`;
 }
 
-
+// --- NEW PROMPT to detect conversation closing remarks ---
 export function getClosingRemarkClassificationPrompt(userMessage) {
   return `A user has just finished a task with an AI assistant. The assistant asked "Is there anything else?".
 The user replied: "${userMessage}"
