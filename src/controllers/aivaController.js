@@ -65,9 +65,11 @@ export async function handleAivaChatInteraction(req, res) {
 
 //  UPDATED Controller Function for Summarization 
 export async function handleSummarizationRequest(req, res) {
+    console.log("--- New Summarization Request Received ---");
     try {
         const userId = req.user?.id || req.user?.uid;
         if (!userId) {
+            console.error("Authentication Error: User ID is missing from the request.");
             return res.status(401).json({ error: 'User not authenticated.' });
         }
 
@@ -75,37 +77,46 @@ export async function handleSummarizationRequest(req, res) {
         const { message } = req.body;
         const file = req.file;
 
+        console.log(`Request Details: Chat ID = ${chatId}, User ID = ${userId}`);
+
         if (!chatId) {
+            console.error("Validation Error: Chat ID is missing from the URL parameters.");
             return res.status(400).json({ error: 'Chat ID is required in the URL path.' });
         }
         
         let responsePayload;
 
         if (file) {
-            // Route file to the correct service based on its type
+            console.log("File detected in request.");
+            console.log(`File Details: Name = ${file.originalname}, Type = ${file.mimetype}, Size = ${file.size} bytes`);
+            
             if (file.mimetype.startsWith('image/')) {
-                console.log(`Summarizing uploaded image: ${file.originalname}`);
+                console.log(`Routing to image summarization service.`);
                 responsePayload = await aivaService.performImageSummarization(userId, chatId, file);
             } else if (file.mimetype === 'application/pdf') {
-                console.log(`Summarizing uploaded PDF: ${file.originalname}`);
+                console.log(`Routing to PDF summarization service.`);
                 responsePayload = await aivaService.performPdfSummarization(userId, chatId, file);
-            } else { // Assumes text/plain
-                console.log(`Summarizing uploaded text file: ${file.originalname}`);
+            } else { 
+                console.log(`Routing to text file summarization service.`);
                 const contentToSummarize = file.buffer.toString('utf-8');
                 responsePayload = await aivaService.performSummarization(userId, chatId, contentToSummarize);
             }
         } else if (message) {
-            // Handle plain text message summarization
-            console.log(`Summarizing text message.`);
+            console.log("Text message detected for summarization.");
             responsePayload = await aivaService.performSummarization(userId, chatId, message);
         } else {
+            console.error("Validation Error: No file or message content was provided.");
             return res.status(400).json({ error: 'No content provided. Please supply a message or upload a file.' });
         }
         
+        console.log("Summarization request processed successfully.");
         return res.status(200).json(responsePayload);
 
     } catch (error) {
-        console.error('Error in handleSummarizationRequest controller:', error);
+        console.error('--- Critical Error in handleSummarizationRequest ---');
+        console.error(`Error details: ${error.message}`);
+        console.error(error.stack);
+
         if (error.message.includes('Unsupported file type')) {
             return res.status(400).json({ error: error.message });
         }
