@@ -13,10 +13,10 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 // import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 import './src/cron/emailScheduler.js';
 import './src/cron/reminderScheduler.js'
-// import './src/cron/appointmentScheduler.js'
+import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js'
-import { test } from './src/cron/appointmentScheduler.js';
+// import { test } from './src/cron/appointmentScheduler.js';
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -31,7 +31,6 @@ app.use(morgan('tiny'));
 
 // Auth Routes
 app.use('/api/auth', authRoutes);
-test()
 // Feature Routes
 // app.use('/api/reminders', reminderRoutes);
 app.use('/api/google-tokens', googleTokenRoutes);
