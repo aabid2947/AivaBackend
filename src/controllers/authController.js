@@ -43,7 +43,7 @@ export const authController = {
    */
   async login(req, res) {
     try {
-      const { idToken } = req.body;
+      const { idToken, fcmToken } = req.body;
 
       if (!idToken) {
         return res.status(400).json({ message: 'ID token is required.' });
@@ -52,9 +52,12 @@ export const authController = {
       // 1. Verify the ID token on the backend using Firebase Admin SDK
       const decodedToken = await authService.verifyIdToken(idToken);
 
-      // 2. Optionally, retrieve user profile from Firestore
+      // 2. Optionally, update user profile with FCM token if provided
       let userProfile = null;
       if (userService && decodedToken.uid) {
+        if (fcmToken) {
+          await userService.createUserProfile(decodedToken.uid, { fcmToken });
+        }
         userProfile = await userService.getUserProfile(decodedToken.uid);
       }
 
@@ -66,6 +69,25 @@ export const authController = {
       });
     } catch (error) {
       errorHandler(res, error, 'Login failed.');
+    }
+  },
+
+  /**
+   * Handles user logout. Removes FCM token from user profile.
+   * Expected request body: { uid }
+   */
+  async logout(req, res) {
+    try {
+      const { uid } = req.body;
+      if (!uid) {
+        return res.status(400).json({ message: 'User ID (uid) is required.' });
+      }
+      if (userService) {
+        await userService.createUserProfile(uid, { fcmToken: null });
+      }
+      res.status(200).json({ message: 'Logout successful.' });
+    } catch (error) {
+      errorHandler(res, error, 'Logout failed.');
     }
   },
 
