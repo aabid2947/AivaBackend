@@ -71,9 +71,15 @@ console.log(summarizedResponse)
     return true;
   } catch (error) {
     console.error('Error sending message:', error);
-    // If the token is invalid, you might want to remove it from the DB
     if (error.code === 'messaging/registration-token-not-registered') {
-      // Logic to remove the invalid token for the user
+      console.warn(`FCM token not registered for reminder ${reminder.id}, user ${reminder.userId}. Removing token from user profile.`);
+      try {
+        const db = admin.firestore();
+        await db.collection('users').doc(reminder.userId).set({ fcmToken: null }, { merge: true });
+        console.log(`Removed invalid FCM token for user ${reminder.userId}`);
+      } catch (removeError) {
+        console.error(`Failed to remove invalid FCM token for user ${reminder.userId}:`, removeError);
+      }
     }
     return false;
   }
