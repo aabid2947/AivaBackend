@@ -56,20 +56,20 @@
 
 
 // src/controllers/googleTokenController.js
-// src/controllers/googleTokenController.js
 import { OAuth2Client } from 'google-auth-library';
 import * as googleTokenService from '../services/googleTokenService.js';
 
-// Initialize the client with all necessary credentials
 const oAuth2Client = new OAuth2Client({
   clientId:     process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  redirectUri:  process.env.GOOGLE_REDIRECT_URI, // Set the redirect URI here
+  
 });
 
 export async function handleStoreUserGoogleTokens(req, res) {
   const userId = req.user?.id || req.user?.uid;
   const { code } = req.body;
+
+
 
   if (!userId) {
     return res.status(401).json({ error: 'User not authenticated.' });
@@ -79,13 +79,13 @@ export async function handleStoreUserGoogleTokens(req, res) {
   }
 
   try {
-    // CORRECTED: The library will now automatically use the redirectUri set above
     const { tokens } = await oAuth2Client.getToken(code);
     
-    // Build the exact payload we want to store
+    // build the exact payload we want to store:
     const payload = {
       accessToken:  tokens.access_token,
       refreshToken: tokens.refresh_token,
+      // use `expiresAt` to match what your service originally expected
       expiresAt:    tokens.expiry_date,     
       scope:        tokens.scope,
       idToken:      tokens.id_token,
