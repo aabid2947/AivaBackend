@@ -1,75 +1,23 @@
 // src/controllers/googleTokenController.js
-// import * as googleTokenService from '../services/googleTokenService.js';
-
-// export async function handleStoreUserGoogleTokens(req, res) {
-//   try {
-//     const userId = req.user?.id || req.user?.uid;
-//     if (!userId) {
-//       return res.status(401).json({ error: 'User not authenticated.' });
-//     }
-
-//     const tokenData = req.body; // Expects { accessToken, refreshToken?, expiresIn?, scope?, idToken? }
-//     if (!tokenData || !tokenData.accessToken) {
-//       return res.status(400).json({ error: 'Access token is required in the request body.' });
-//     }
-
-//     await googleTokenService.storeUserGoogleTokens(userId, tokenData);
-//     return res.status(200).json({ message: 'Google OAuth tokens stored successfully.' });
-//   } catch (error) {
-//     console.error('Error in handleStoreUserGoogleTokens controller:', error);
-//     if (error.message.includes('required')) {
-//         return res.status(400).json({ error: error.message });
-//     }
-//     return res.status(500).json({ error: 'Failed to store Google OAuth tokens.' });
-//   }
-// }
-// src/controllers/googleTokenController.js
-
-
-// export async function handleStoreUserGoogleTokens(req, res) {
-//   const userId = req.user?.id || req.user?.uid;
-//   if (!userId) {
-//     return res.status(401).json({ error: 'User not authenticated.' });
-//   }
-
-//   const { code } = req.body;
-//   if (!code) {
-//     return res.status(400).json({ error: 'Authorization code is required.' });
-//   }
-
-//   try {
-//     // Exchange the code for tokens
-//     const { tokens } = await oAuth2Client.getToken({
-//       code,
-//       redirect_uri: process.env.GOOGLE_REDIRECT_URI,
-//     });
-//     console.log(process.env.GOOGLE_REDIRECT_URI)
-//     // tokens = { access_token, refresh_token, scope, expiry_date, id_token }
-//     await googleTokenService.storeUserGoogleTokens(userId, tokens);
-
-//     return res.status(200).json({ message: 'Google tokens stored successfully.' });
-//   } catch (err) {
-//     console.error('Error exchanging code for tokens:', err);
-//     return res.status(500).json({ error: 'Failed to exchange code for tokens.' });
-//   }
-// }
-
-
-// src/controllers/googleTokenController.js
 import { OAuth2Client } from 'google-auth-library';
 import * as googleTokenService from '../services/googleTokenService.js';
 
 const oAuth2Client = new OAuth2Client({
-  clientId:     process.env.GOOGLE_CLIENT_ID,
+  clientId: process.env.GOOGLE_CLIENT_ID,
   clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  
+  // Remove the redirectUri from here - it should be set per request
 });
 
 export async function handleStoreUserGoogleTokens(req, res) {
   const userId = req.user?.id || req.user?.uid;
   const { code } = req.body;
 
-
+  console.log('🔵 Handling Google OAuth token exchange:', {
+    userId: userId ? 'present' : 'missing',
+    code: code ? `${code.substring(0, 20)}...` : 'missing',
+    clientId: process.env.GOOGLE_CLIENT_ID ? 'configured' : 'missing',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ? 'configured' : 'missing'
+  });
 
   if (!userId) {
     return res.status(401).json({ error: 'User not authenticated.' });
@@ -79,26 +27,50 @@ export async function handleStoreUserGoogleTokens(req, res) {
   }
 
   try {
-    const { tokens } = await oAuth2Client.getToken(code);
+    // For mobile apps, we don't need a redirect_uri when exchanging the code
+    // The mobile SDK handles the redirect internally
+    const { tokens } = await oAuth2Client.getToken({
+      code: code,
+      // Don't include redirect_uri for mobile app auth codes
+    });
     
-    // build the exact payload we want to store:
+    console.log('🟢 Successfully exchanged code for tokens:', {
+      hasAccessToken: !!tokens.access_token,
+      hasRefreshToken: !!tokens.refresh_token,
+      hasIdToken: !!tokens.id_token,
+      expiryDate: tokens.expiry_date,
+      scope: tokens.scope
+    });
+    
+    // Build the exact payload we want to store:
     const payload = {
-      accessToken:  tokens.access_token,
+      accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
-      // use `expiresAt` to match what your service originally expected
-      expiresAt:    tokens.expiry_date,     
-      scope:        tokens.scope,
-      idToken:      tokens.id_token,
+      expiresAt: tokens.expiry_date,     
+      scope: tokens.scope,
+      idToken: tokens.id_token,
     };
+    
     await googleTokenService.storeUserGoogleTokens(userId, payload);
 
-    return res.status(200).json({ message: 'Google tokens stored successfully.' });
+    return res.status(200).json({ 
+      message: 'Google tokens stored successfully.',
+      // Optionally return some non-sensitive info
+      scope: tokens.scope,
+      hasRefreshToken: !!tokens.refresh_token
+    });
   } catch (err) {
-    console.error('🔴 Error exchanging code for tokens:', err.response?.data || err);
+    console.error('🔴 Error exchanging code for tokens:', {
+      error: err.response?.data || err.message,
+      stack: err.stack,
+      code: code ? `${code.substring(0, 20)}...` : 'missing'
+    });
+    
     const message =
       err.response?.data?.error_description ||
       err.response?.data?.error ||
       'Failed to exchange code for tokens.';
+      
     return res.status(500).json({ error: message });
   }
 }
