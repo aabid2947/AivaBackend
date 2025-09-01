@@ -5,8 +5,9 @@ import { addMessageToHistory } from './chatService.js';
 import { updateConversationState } from './conversationService.js';
 import { getSummarizationPrompt, getVisionSummarizationPrompt } from './prompts.js';
 import { ConversationStates } from './constants.js';
-// import pdf from 'pdf-parse'; 
-import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+
+// For PDFs, we'll use Gemini Vision API directly since PDF text extraction
+// can be problematic in serverless environments
 
 export async function performSummarization(userId, chatId, textToSummarize) {
   console.log(`Starting text summarization for Chat ID: ${chatId}`);
@@ -38,29 +39,30 @@ export async function performPdfSummarization(userId, chatId, file) {
   if (!db) throw new Error('Database not initialized.');
 
   try {
-    pdfjs.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
-    console.log("PDF.js worker source configured.");
+    console.log("Processing PDF using Gemini Vision API...");
 
-    const doc = await pdfjs.getDocument({ data: new Uint8Array(file.buffer) }).promise;
-    console.log(`PDF document loaded successfully. It has ${doc.numPages} pages.`);
+    // Use Gemini Vision to analyze the PDF directly
+    const prompt = getVisionSummarizationPrompt("This is a PDF document. Please extract and summarize the key information from this document.");
+    const summaryResponse = await generateGeminiVisionResponse(prompt, file.buffer, file.mimetype);
     
-    let fullText = '';
-    for (let i = 1; i <= doc.numPages; i++) {
-      console.log(`Processing page ${i}...`);
-      const page = await doc.getPage(i);
-      const textContent = await page.getTextContent();
-      const pageText = textContent.items.map(item => item.str).join(' ');
-      fullText += pageText + '\n';
-      console.log(`Extracted ${pageText.length} characters from page ${i}.`);
+    if (!summaryResponse) {
+      throw new Error("Could not process the PDF document.");
     }
 
-    if (!fullText.trim()) {
-        console.warn("Warning: No text could be extracted from the PDF. It might be an image-based file.");
-        throw new Error("Could not extract text from the PDF. It may be an image-based PDF.");
-    }
+    console.log("Successfully processed PDF with Gemini Vision API.");
+    
+    await addMessageToHistory(userId, chatId, 'user', `[PDF Document: ${file.originalname}]`, ConversationStates.AWAITING_CONTENT_FOR_SUMMARY);
+    const aivaMessageRef = await addMessageToHistory(userId, chatId, 'assistant', summaryResponse, ConversationStates.AWAITING_USER_REQUEST);
+    await updateConversationState(userId, chatId, ConversationStates.AWAITING_USER_REQUEST, { lastProposedIntent: null, lastAivaMessageId: aivaMessageRef.id });
 
-    console.log(`Total extracted text length from PDF: ${fullText.length}. Proceeding with summarization.`);
-    return await performSummarization(userId, chatId, fullText);
+    console.log(`PDF summarization complete for chat ${chatId}.`);
+    return {
+      id: aivaMessageRef.id,
+      aivaResponse: summaryResponse,
+      currentState: ConversationStates.AWAITING_USER_REQUEST,
+      chatId: chatId,
+      userId: userId,
+    };
 
   } catch (error) {
     console.error('--- Error during PDF processing ---');
