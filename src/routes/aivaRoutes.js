@@ -1,5 +1,6 @@
 // src/routes/aivaRoutes.js
 import express from 'express';
+import multer from 'multer';
 const router = express.Router();
 // Assuming your controller file is indeed aivaController.js and exports named functions
 import * as aivaController from '../controllers/aivaController.js';
@@ -23,7 +24,28 @@ router.post('/chats/interact', authMiddleware, aivaController.handleAivaChatInte
 router.post(
     '/chats/:chatId/summarize',
     authMiddleware,
-    aivaController.upload.single('file'), // 'file' is the field name for the uploaded file
+    (req, res, next) => {
+        aivaController.upload.single('file')(req, res, (err) => {
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    return res.status(413).json({ 
+                        error: 'File too large. Maximum size is 50MB. Note: Vercel has a 10MB limit on Hobby plan.',
+                        maxSize: '50MB',
+                        platform: 'vercel',
+                        suggestion: 'Consider upgrading to Vercel Pro or use a different hosting platform for larger files.'
+                    });
+                }
+                return res.status(400).json({ 
+                    error: `Upload error: ${err.message}` 
+                });
+            } else if (err) {
+                return res.status(400).json({ 
+                    error: err.message 
+                });
+            }
+            next();
+        });
+    },
     aivaController.handleSummarizationRequest
 );
 
