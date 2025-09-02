@@ -25,8 +25,11 @@ initFirebaseAdmin();
 
 // Middleware
 app.use(cors());
-app.use(express.json()); // For parsing application/json
-app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ 
+    limit: '50mb', 
+    extended: true 
+})); // For parsing application/x-www-form-urlencoded
 app.use(morgan('tiny'));
 
 // Auth Routes
