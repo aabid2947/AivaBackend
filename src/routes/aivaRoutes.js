@@ -29,10 +29,9 @@ router.post(
             if (err instanceof multer.MulterError) {
                 if (err.code === 'LIMIT_FILE_SIZE') {
                     return res.status(413).json({ 
-                        error: 'File too large. Maximum size is 50MB. Note: Vercel has a 10MB limit on Hobby plan.',
+                        error: 'File too large. Maximum size is 50MB.',
                         maxSize: '50MB',
-                        platform: 'vercel',
-                        suggestion: 'Consider upgrading to Vercel Pro or use a different hosting platform for larger files.'
+                        suggestion: 'Please reduce file size to under 50MB.'
                     });
                 }
                 return res.status(400).json({ 

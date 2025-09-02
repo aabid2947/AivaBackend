@@ -26,24 +26,24 @@ initFirebaseAdmin();
 // Middleware
 app.use(cors());
 
-// Custom middleware to handle payload too large errors
-app.use((err, req, res, next) => {
-    if (err.type === 'entity.too.large') {
-        return res.status(413).json({
-            error: 'File too large for server',
-            maxSize: '10MB (Vercel Hobby plan limit)',
-            suggestion: 'Please reduce file size to under 10MB or upgrade to Vercel Pro for larger file support.'
-        });
-    }
-    next(err);
-});
-
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ 
     limit: '50mb', 
     extended: true 
 })); // For parsing application/x-www-form-urlencoded
 app.use(morgan('tiny'));
+
+// Custom middleware to handle payload too large errors
+app.use((err, req, res, next) => {
+    if (err.type === 'entity.too.large') {
+        return res.status(413).json({
+            error: 'File too large for server',
+            maxSize: '50MB',
+            suggestion: 'Please reduce file size to under 50MB.'
+        });
+    }
+    next(err);
+});
 
 // Auth Routes
 app.use('/api/auth', authRoutes);
