@@ -328,6 +328,13 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         break;
       }
+      if (updatedApptDetails.bookingContactNumber === 'USER_CONTACT_SAME') {
+        aivaResponseContent = "The Phone Number is same as your contact. Could you please provide the booking contact number?";
+        updatedApptDetails.bookingContactNumber = null;
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        break;
+      }
 
       const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key] && key !== 'userContact' && key !== 'extraDetails');
 

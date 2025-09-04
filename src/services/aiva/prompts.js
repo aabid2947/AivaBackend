@@ -65,9 +65,9 @@ export function getFollowUpQuestionAnswerPrompt(appointmentDetails, question) {
     return `You are a helpful AI assistant who has just confirmed an appointment. The user had a quick follow-up question. Provide a concise and direct answer.
 
     Here is the context you have:
-    - Patient Name: ${appointmentDetails.userName}
-    - Patient Contact: ${appointmentDetails.userContact || 'Not provided'}
-    - Call-in Number for Clinic: ${appointmentDetails.bookingContactNumber}
+    - User Name: ${appointmentDetails.userName}
+    - User Contact: ${appointmentDetails.userContact || 'Not provided'}
+    - Call-in Number for Appointment: ${appointmentDetails.bookingContactNumber}
     - Reason for Appointment: ${appointmentDetails.reasonForAppointment}
     - Special Instructions on file: ${appointmentDetails.extraDetails || 'None'}
 
@@ -93,7 +93,7 @@ ${detailsString}
 The user just sent a new message: "${userMessage}"
 
 Analyze the new message to extract or update the details.
-- **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID".
+- **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID" and if the number is same as userContact,set its value as "USER_CONTACT_SAME".
 - Today's date is ${new Date().toDateString()}.
 - The user is in the EAT (East Africa Time UTC+3 ) timezone.
 - Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
