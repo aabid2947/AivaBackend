@@ -40,8 +40,10 @@ const getAffirmativeNegativeClassificationPrompt = (userReply) => {
 };
 
 async function getAppointmentRef(appointmentId) {
-    const snapshot = await db.collectionGroup('appointments').where('__name__', '==', appointmentId).get();
-    const foundDoc = snapshot.docs[0];
+    // Query the appointments collection group by document ID field
+    const snapshot = await db.collectionGroup('appointments').get();
+    const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
+    
     if (!foundDoc) {
         console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}.`);
         throw new Error(`Could not find appointment ${appointmentId}`);

@@ -94,6 +94,7 @@ The user just sent a new message: "${userMessage}"
 
 Analyze the new message to extract or update the details.
 - **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID".
+- **Special Case**: If the user provides the same number for both userContact and bookingContactNumber, set bookingContactNumber to "SAME_AS_USER" instead of "INVALID".
 - Today's date is ${new Date().toDateString()}.
 - The user is in the EAT (East Africa Time UTC+3 ) timezone.
 - Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
@@ -143,8 +144,8 @@ The "details" object should correspond to the intent:
   - "reminder_iso_string_with_offset": The full date and time for the reminder as an ISO 8601 string with timezone offset.
 - If intent is "${IntentCategories.APPOINTMENT_CALL}", extract:
   - "userName": The full name of the person for the appointment.
-  - "userContact": The phone number or email of the patient.
-  - "bookingContactNumber": The phone number to call for booking.
+  - "userContact": The phone number of the patient (so the clinic can contact them).
+  - "bookingContactNumber": The phone number of the clinic/office to call for booking.
   - "reasonForAppointment": The reason for the appointment.
   - "reminder_iso_string_with_offset": The suggested date/time for the call.
 

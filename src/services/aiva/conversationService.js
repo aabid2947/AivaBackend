@@ -84,7 +84,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
         }
       } else if (intent === IntentCategories.APPOINTMENT_CALL) {
-        if (details.userName && details.bookingContactNumber && details.reasonForAppointment && details.reminder_iso_string_with_offset) {
+        if (details.userName && details.userContact && details.bookingContactNumber && details.reasonForAppointment && details.reminder_iso_string_with_offset) {
           const callDateTime = new Date(details.reminder_iso_string_with_offset);
           if (isNaN(callDateTime.getTime())) {
             aivaResponseContent = "I can help book that appointment, but I had trouble with the date and time provided. When should I make the call?";
@@ -92,18 +92,20 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
             await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
           } else {
-            aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${details.userName}, I will call ${details.bookingContactNumber} regarding "${details.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
+            aivaResponseContent = `Okay, I'm ready to book. Please confirm: For ${details.userName} (${details.userContact}), I will call ${details.bookingContactNumber} regarding "${details.reasonForAppointment}" at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}. Is this correct?`;
             nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
             await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
           }
         } else if (details && Object.values(details).some(v => v !== null)) {
-          const appointmentFields = ['userName', 'bookingContactNumber', 'reasonForAppointment', 'reminder_iso_string_with_offset'];
+          const appointmentFields = ['userName', 'userContact', 'bookingContactNumber', 'reasonForAppointment', 'reminder_iso_string_with_offset'];
           const missingApptDetails = appointmentFields.filter(key => !details[key]);
           let followupQuestion = "Okay, I can help book that appointment. ";
           if (missingApptDetails.includes('userName')) {
             followupQuestion += "What is the full name of the person this appointment is for?";
+          } else if (missingApptDetails.includes('userContact')) {
+            followupQuestion += "What is the patient's phone number (so the clinic can contact them)?";
           } else if (missingApptDetails.includes('bookingContactNumber')) {
-            followupQuestion += "What's the phone number I should call to book the appointment?";
+            followupQuestion += "What's the clinic's or office's phone number I should call to book the appointment?";
           } else if (missingApptDetails.includes('reasonForAppointment')) {
             followupQuestion += "What is the reason for this appointment?";
           } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
@@ -145,7 +147,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
 
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
-          aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name and contact info (phone/email) of the person the appointment is for?";
+          aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name of the person this appointment is for?";
           nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
           await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, reminder_iso_string_with_offset: null, extraDetails: null } });
 
@@ -329,7 +331,15 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         break;
       }
 
-      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key] && key !== 'userContact' && key !== 'extraDetails');
+      if (updatedApptDetails.bookingContactNumber === 'SAME_AS_USER') {
+        aivaResponseContent = "I notice you provided the same number as the patient's contact number. This would be the number I call to book the appointment. Do you want to use a different number for the clinic/office, or should I use this same number?";
+        updatedApptDetails.bookingContactNumber = updatedApptDetails.userContact; // Set it to the same as user contact for now
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        break;
+      }
+
+      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key] && key !== 'extraDetails');
 
       if (missingApptDetails.length === 0) {
         // --- NEW LOGIC: Once main details are collected, ask for extra details. ---
@@ -341,8 +351,10 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         let followupQuestion = "Thanks! ";
         if (missingApptDetails.includes('userName')) {
           followupQuestion += "What is the full name of the person this appointment is for?";
+        } else if (missingApptDetails.includes('userContact')) {
+          followupQuestion += "What is the patient's phone number (so the clinic can contact them)?";
         } else if (missingApptDetails.includes('bookingContactNumber')) {
-          followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
+          followupQuestion += "What's the clinic's or office's phone number I should call to book the appointment? Please include the country code.";
         } else if (missingApptDetails.includes('reasonForAppointment')) {
           followupQuestion += "What is the reason for this appointment?";
         } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
@@ -370,7 +382,13 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       }
 
       const callDateTime = new Date(finalApptDetailsFromState.reminder_iso_string_with_offset);
-      let confirmationMessage = `Okay, let's confirm. I will call ${finalApptDetailsFromState.bookingContactNumber} for ${finalApptDetailsFromState.userName} regarding "${finalApptDetailsFromState.reasonForAppointment}". I'll make this call at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}.`;
+      let confirmationMessage = `Okay, let's confirm. I will call ${finalApptDetailsFromState.bookingContactNumber} for ${finalApptDetailsFromState.userName}`;
+      
+      if (finalApptDetailsFromState.userContact) {
+        confirmationMessage += ` (patient contact: ${finalApptDetailsFromState.userContact})`;
+      }
+      
+      confirmationMessage += ` regarding "${finalApptDetailsFromState.reasonForAppointment}". I'll make this call at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}.`;
       
       if (finalApptDetailsFromState.extraDetails) {
         confirmationMessage += ` I will also include the following note: "${finalApptDetailsFromState.extraDetails}".`;
