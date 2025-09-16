@@ -79,29 +79,98 @@ export function getFollowUpQuestionAnswerPrompt(appointmentDetails, question) {
 
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
-  return `An AI assistant is helping a user book an appointment. It needs to collect:
-- "userName": The full name of the person for whom the appointment is.
-- "userContact": The phone number of the patient. This is important so the clinic can contact them.
-- "bookingContactNumber": The phone number of the clinic, office, or person to call. This number MUST be a valid phone number format.
-- "reasonForAppointment": The reason for the appointment.
-- "reminder_iso_string_with_offset": The full date and time for when the AI should MAKE THE CALL, as a single ISO 8601 string including the timezone offset. This is NOT the final appointment time.
-- "extraDetails": Any other specific instructions or details for the booking (e.g., "ask for Dr. Smith", "mention it's for a follow-up"). This is optional.
+  return `An AI assistant is helping a user book an appointment. It needs to collect these ESSENTIAL parameters:
 
-The assistant has already collected some information:
+REQUIRED PARAMETERS:
+- "userName": The full name of the person for whom the appointment is (first and last name)
+- "userContact": The patient's phone number with country code (e.g., +254712345678, +1234567890)
+- "bookingContactNumber": The clinic/office phone number to call for booking (MUST be different from userContact and include country code)
+- "reasonForAppointment": Clear reason for the appointment (e.g., "dental checkup", "eye examination")
+- "callTime": When the AI should make the booking call (e.g., "tomorrow at 2 PM", "Monday morning")
+
+OPTIONAL PARAMETER:
+- "extraDetails": Special instructions for booking (e.g., "ask for Dr. Smith", "mention urgent case")
+
+CURRENT COLLECTED DATA:
 ${detailsString}
 
-The user just sent a new message: "${userMessage}"
+USER'S NEW MESSAGE: "${userMessage}"
 
-Analyze the new message to extract or update the details.
-- **Validation Rule**: If the user provides a "bookingContactNumber" that is clearly not a valid phone number (e.g., has more than 15 digits, contains letters), set its value to "INVALID" and if the number is same as userContact,set its value as "USER_CONTACT_SAME".
-- Today's date is ${new Date().toDateString()}.
-- The user is in the EAT (East Africa Time UTC+3 ) timezone.
-- Convert their local time to a full ISO 8601 string WITH THE UTC OFFSET. For example, "July 5th at 6:45 PM" should become "2025-07-05T18:45:00+03:00".
+VALIDATION RULES:
+1. **Phone Number Format**: Both userContact and bookingContactNumber must:
+   - Include country code (+ followed by digits)
+   - Be 10-15 digits total (including country code)
+   - Not contain letters or special characters except +
+   - Example valid: +254712345678, +12345678901
 
-Return a VALID JSON object containing all the details collected so far. If a detail is still missing, its value should be null.`;
+2. **Different Numbers**: If bookingContactNumber equals userContact, set bookingContactNumber to "SAME_AS_USER"
+
+3. **Invalid Phone Numbers**: If a phone number is clearly invalid (too long, has letters, wrong format), set it to "INVALID_FORMAT"
+
+4. **Call Time**: Convert to ISO 8601 format with EAT timezone (+03:00)
+   - Today is ${new Date().toDateString()}
+   - User timezone: EAT (UTC+3)
+   - Example: "tomorrow 2 PM" → "2025-09-17T14:00:00+03:00"
+
+5. **Name Validation**: userName should be a proper full name (first + last), not just first name
+
+IMPORTANT: Analyze the user's message carefully. Extract/update only the information provided. If a detail is not mentioned or unclear, keep its current value or set to null if never provided.
+
+Return ONLY a valid JSON object with ALL parameters (use null for missing values):
+
+Example output format:
+{
+  "userName": "John Doe",
+  "userContact": "+254712345678", 
+  "bookingContactNumber": "+254701234567",
+  "reasonForAppointment": "dental checkup",
+  "callTime": "2025-09-17T14:00:00+03:00",
+  "extraDetails": "ask for Dr. Smith"
+}`;
 }
 
+// Enhanced prompt for handling appointment detail corrections
+export function getAppointmentCorrectionPrompt(userMessage, currentDetails) {
+  const detailsString = JSON.stringify(currentDetails, null, 2);
+  return `A user wants to correct some appointment booking details. 
 
+CURRENT APPOINTMENT DETAILS:
+${detailsString}
+
+USER'S CORRECTION MESSAGE: "${userMessage}"
+
+Analyze what the user wants to change and return a JSON object with ONLY the fields that need to be updated. Keep all other fields unchanged.
+
+VALIDATION RULES (same as before):
+1. Phone numbers must include country code and be valid format
+2. If bookingContactNumber equals userContact, set to "SAME_AS_USER"  
+3. Invalid phone formats should be set to "INVALID_FORMAT"
+4. Convert call times to ISO 8601 format with EAT timezone (+03:00)
+
+Examples:
+- User: "Change the phone number to +254701234567" → {"bookingContactNumber": "+254701234567"}
+- User: "Make it for dental checkup instead" → {"reasonForAppointment": "dental checkup"}
+- User: "Call tomorrow at 3 PM instead" → {"callTime": "2025-09-17T15:00:00+03:00"}
+
+Return ONLY a JSON object with the updated fields.`;
+}
+
+// Phone number validation prompt
+export function getPhoneValidationPrompt(phoneNumber, phoneType) {
+  return `Validate this phone number: "${phoneNumber}"
+  
+  This is a ${phoneType} (either "user contact" or "clinic contact").
+  
+  A valid phone number should:
+  - Start with + followed by country code
+  - Have 10-15 total digits (including country code)
+  - Not contain letters or special characters except +
+  
+  Valid examples: +254712345678, +12345678901, +441234567890
+  Invalid examples: 0712345678, +2547123456789123, +254abc123456
+  
+  Return only: "VALID" or "INVALID"`;
+}
 
 // Other prompts remain unchanged
 export function getPaymentDetailsExtractionPrompt(userMessage, existingDetails) {

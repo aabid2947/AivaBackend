@@ -308,63 +308,136 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       }
 
       const existingApptDetails = conversationState.appointmentDetails || {};
-      const extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
+      
+      // Check if this is a correction to existing details (if we already have some details)
+      const hasExistingDetails = Object.keys(existingApptDetails).some(key => existingApptDetails[key] && key !== 'extraDetails');
+      
+      let extractedApptDetailsRaw;
+      if (hasExistingDetails) {
+        // Use correction prompt if we already have details
+        extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentCorrectionPrompt(userMessageContent, existingApptDetails));
+      } else {
+        // Use initial extraction prompt for new details
+        extractedApptDetailsRaw = await generateGeminiText(Prompts.getAppointmentDetailsExtractionPrompt(userMessageContent, existingApptDetails));
+      }
 
       let updatedApptDetails = {};
       try {
         const cleanedJsonString = extractedApptDetailsRaw.replace(/^```json\s*|```\s*$/g, '');
-        updatedApptDetails = JSON.parse(cleanedJsonString);
+        const extractedDetails = JSON.parse(cleanedJsonString);
+        
+        // Merge extracted details with existing details
+        updatedApptDetails = { ...existingApptDetails, ...extractedDetails };
       } catch (e) {
         console.error("Failed to parse appointment details JSON:", e, extractedApptDetailsRaw);
-        aivaResponseContent = "I'm having a little trouble understanding. Could you please rephrase that?";
+        aivaResponseContent = "I'm having trouble understanding. Could you please rephrase that? I need clear information for the appointment booking.";
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         break;
       }
 
-      if (updatedApptDetails.bookingContactNumber === 'INVALID') {
-        aivaResponseContent = "That doesn't seem to be a valid phone number. Please provide a correct phone number, including the country code if necessary.";
-        updatedApptDetails.bookingContactNumber = null;
-        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-        break;
-      }
-      if (updatedApptDetails.bookingContactNumber === 'USER_CONTACT_SAME') {
-        aivaResponseContent = "The Phone Number is same as your contact. Could you please provide the booking contact number?";
+      // Handle phone number validation errors
+      if (updatedApptDetails.bookingContactNumber === 'INVALID_FORMAT') {
+        aivaResponseContent = "That doesn't seem to be a valid phone number for the clinic. Please provide a correct phone number with country code (e.g., +254712345678 or +1234567890).";
         updatedApptDetails.bookingContactNumber = null;
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         break;
       }
 
-      const missingApptDetails = Object.keys(updatedApptDetails).filter(key => !updatedApptDetails[key] && key !== 'userContact' && key !== 'extraDetails');
+      if (updatedApptDetails.userContact === 'INVALID_FORMAT') {
+        aivaResponseContent = "Your phone number doesn't seem to be in the correct format. Please provide your phone number with country code (e.g., +254712345678 or +1234567890).";
+        updatedApptDetails.userContact = null;
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        break;
+      }
+
+      if (updatedApptDetails.bookingContactNumber === 'SAME_AS_USER') {
+        aivaResponseContent = "I notice you've provided the same number for both your contact and the clinic's number. I need the clinic's phone number to book the appointment. Could you please provide the correct clinic phone number?";
+        updatedApptDetails.bookingContactNumber = null;
+        nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
+        break;
+      }
+
+      // Check for missing essential details and ask specifically
+      const missingApptDetails = [];
+      if (!updatedApptDetails.userName) missingApptDetails.push('userName');
+      if (!updatedApptDetails.userContact) missingApptDetails.push('userContact');
+      if (!updatedApptDetails.bookingContactNumber) missingApptDetails.push('bookingContactNumber');
+      if (!updatedApptDetails.reasonForAppointment) missingApptDetails.push('reasonForAppointment');
+      if (!updatedApptDetails.callTime) missingApptDetails.push('callTime');
 
       if (missingApptDetails.length === 0) {
-        // --- NEW LOGIC: Once main details are collected, ask for extra details. ---
-        aivaResponseContent = "Okay, I have the main details. Are there any other instructions or notes I should have for this booking? If not, just say 'no'.";
-        nextState = ConversationStates.AWAITING_EXTRA_APPOINTMENT_DETAILS;
-        await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
-
-      } else {
-        let followupQuestion = "Thanks! ";
-        if (missingApptDetails.includes('userName')) {
-          followupQuestion += "What is the full name of the person this appointment is for?";
-        } else if (missingApptDetails.includes('bookingContactNumber')) {
-          followupQuestion += "What's the phone number I should call to book the appointment? Please include the country code.";
-        } else if (missingApptDetails.includes('reasonForAppointment')) {
-          followupQuestion += "What is the reason for this appointment?";
-        } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
-          followupQuestion += "And when would be a good time for me to make this call?";
+        // All essential details collected, do final validation
+        let validationErrors = [];
+        
+        // Validate phone numbers are different
+        if (updatedApptDetails.userContact && updatedApptDetails.bookingContactNumber && 
+            updatedApptDetails.userContact === updatedApptDetails.bookingContactNumber) {
+          validationErrors.push("Your contact number and the clinic's number appear to be the same. Please provide the correct clinic phone number.");
+        }
+        
+        // Validate name format (should have at least first and last name)
+        if (updatedApptDetails.userName && !updatedApptDetails.userName.includes(' ')) {
+          validationErrors.push("Please provide the full name (both first and last name) for the appointment.");
+        }
+        
+        // Validate call time is in the future
+        if (updatedApptDetails.callTime) {
+          const callTime = new Date(updatedApptDetails.callTime);
+          const now = new Date();
+          if (callTime <= now) {
+            validationErrors.push("The call time should be in the future. Please provide a future date and time for when I should make the call.");
+          }
+        }
+        
+        if (validationErrors.length > 0) {
+          aivaResponseContent = validationErrors.join(' ');
+          nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
+          // Reset the problematic fields
+          if (updatedApptDetails.userContact === updatedApptDetails.bookingContactNumber) {
+            updatedApptDetails.bookingContactNumber = null;
+          }
+          if (updatedApptDetails.userName && !updatedApptDetails.userName.includes(' ')) {
+            updatedApptDetails.userName = null;
+          }
+          if (updatedApptDetails.callTime && new Date(updatedApptDetails.callTime) <= new Date()) {
+            updatedApptDetails.callTime = null;
+          }
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         } else {
-          followupQuestion = "I still need a little more information. Can you please provide the remaining details?";
+          // All validation passed, ask for extra details
+          aivaResponseContent = "Perfect! I have all the essential details. Are there any special instructions I should mention when calling (like asking for a specific doctor, mentioning urgency, etc.)? If not, just say 'no' or 'none'.";
+          nextState = ConversationStates.AWAITING_EXTRA_APPOINTMENT_DETAILS;
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         }
 
-        aivaResponseContent = followupQuestion.trim();
+      } else {
+        // Ask for missing details in priority order
+        let followupQuestion = "";
+        
+        if (missingApptDetails.includes('userName')) {
+          followupQuestion = "What is the full name of the person this appointment is for? (Please provide both first and last name)";
+        } else if (missingApptDetails.includes('userContact')) {
+          followupQuestion = "What is your phone number? Please include the country code (e.g., +254712345678 for Kenya or +1234567890 for US).";
+        } else if (missingApptDetails.includes('reasonForAppointment')) {
+          followupQuestion = "What is the reason for this appointment? (e.g., 'dental checkup', 'eye examination', 'consultation')";
+        } else if (missingApptDetails.includes('bookingContactNumber')) {
+          followupQuestion = "What is the phone number of the clinic or office I should call to book this appointment? Please include the country code (e.g., +254701234567).";
+        } else if (missingApptDetails.includes('callTime')) {
+          followupQuestion = "When would be a good time for me to make this call to book the appointment? (e.g., 'tomorrow at 2 PM', 'Monday morning', 'this evening')";
+        } else {
+          followupQuestion = "I still need some more information. Can you please provide the missing details?";
+        }
+
+        aivaResponseContent = followupQuestion;
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
       }
       break;
 
-    // --- NEW CASE: Handle the collection of extra details ---
+    // --- CASE: Handle the collection of extra details ---
     case ConversationStates.AWAITING_EXTRA_APPOINTMENT_DETAILS:
       const finalApptDetailsFromState = conversationState.appointmentDetails;
       const isNegativeResponseRaw = await generateGeminiText(Prompts.getAffirmativeNegativeClassificationPrompt(userMessageContent, "providing extra details"));
@@ -376,14 +449,31 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         finalApptDetailsFromState.extraDetails = userMessageContent;
       }
 
-      const callDateTime = new Date(finalApptDetailsFromState.reminder_iso_string_with_offset);
-      let confirmationMessage = `Okay, let's confirm. I will call ${finalApptDetailsFromState.bookingContactNumber} for ${finalApptDetailsFromState.userName} regarding "${finalApptDetailsFromState.reasonForAppointment}". I'll make this call at approximately ${callDateTime.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}.`;
+      // Convert callTime to proper format for confirmation
+      const callDateTime = new Date(finalApptDetailsFromState.callTime);
+      const formattedCallTime = callDateTime.toLocaleString('en-KE', { 
+        timeZone: 'Africa/Nairobi',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long', 
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+
+      let confirmationMessage = `Perfect! Let me confirm all the details:\n\n`;
+      confirmationMessage += `👤 Patient Name: ${finalApptDetailsFromState.userName}\n`;
+      confirmationMessage += `📱 Patient Contact: ${finalApptDetailsFromState.userContact}\n`;
+      confirmationMessage += `🏥 Clinic Number: ${finalApptDetailsFromState.bookingContactNumber}\n`;
+      confirmationMessage += `📋 Appointment Reason: ${finalApptDetailsFromState.reasonForAppointment}\n`;
+      confirmationMessage += `⏰ I will call at: ${formattedCallTime}\n`;
       
       if (finalApptDetailsFromState.extraDetails) {
-        confirmationMessage += ` I will also include the following note: "${finalApptDetailsFromState.extraDetails}".`;
+        confirmationMessage += `📝 Special Instructions: ${finalApptDetailsFromState.extraDetails}\n`;
       }
       
-      confirmationMessage += ` Is all of this correct?`;
+      confirmationMessage += `\nIs all of this information correct?`;
 
       aivaResponseContent = confirmationMessage;
       nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
@@ -396,25 +486,47 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
       if (apptConfirmation === 'AFFIRMATIVE') {
         const finalApptDetails = conversationState.appointmentDetails;
-        const scheduleTime = new Date(finalApptDetails.reminder_iso_string_with_offset);
+        const scheduleTime = new Date(finalApptDetails.callTime);
 
+        // Prepare appointment data for storage (convert to legacy format for compatibility)
         const appointmentData = {
-          ...finalApptDetails,
+          userName: finalApptDetails.userName,
+          userContact: finalApptDetails.userContact,
+          bookingContactNumber: finalApptDetails.bookingContactNumber,
+          reasonForAppointment: finalApptDetails.reasonForAppointment,
+          reminder_iso_string_with_offset: finalApptDetails.callTime, // Legacy field name
+          extraDetails: finalApptDetails.extraDetails,
           userId,
           chatId,
           status: 'pending',
           createdAt: new Date(),
           scheduleTime: scheduleTime,
         };
+
         const appointmentRef = await db.collection('users').doc(userId).collection('appointments').add(appointmentData);
-        aivaResponseContent = `Great, I have all the details. I will make the call around the preferred time to book the appointment for ${finalApptDetails.userName}. I'll let you know how it goes. Is there anything else?`;
+        
+        const successMessage = `Excellent! ✅ I have scheduled the appointment booking call for ${finalApptDetails.userName}. I will call ${finalApptDetails.bookingContactNumber} at the specified time to book the appointment regarding "${finalApptDetails.reasonForAppointment}". You'll receive a notification about the booking outcome.\n\nIs there anything else I can help you with?`;
+        
+        aivaResponseContent = successMessage;
         nextState = ConversationStates.AWAITING_USER_REQUEST;
-        await updateConversationState(userId, chatId, nextState, { lastProposedIntent: null, appointmentDetails: {}, lastAppointmentId: appointmentRef.id, taskJustCompleted: true });
-      } else {
-        aivaResponseContent = "My apologies. What would you like to change? Please provide the new details.";
+        await updateConversationState(userId, chatId, nextState, { 
+          lastProposedIntent: null, 
+          appointmentDetails: {}, 
+          lastAppointmentId: appointmentRef.id, 
+          taskJustCompleted: true 
+        });
+        
+      } else if (apptConfirmation === 'NEGATIVE') {
+        aivaResponseContent = "No problem! What would you like to change? Please tell me which details need to be corrected and provide the correct information.";
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-        // Keep existing details so user only has to correct them
+        // Keep existing details so user only has to correct specific items
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: conversationState.appointmentDetails });
+        
+      } else {
+        // UNCLEAR response
+        aivaResponseContent = "I didn't quite catch that. To proceed with booking the appointment, please say 'yes' or 'confirm'. If you need to make changes, please say 'no' or 'change'.";
+        nextState = ConversationStates.AWAITING_APPOINTMENT_CONFIRMATION;
+        // Keep the same state and details
       }
       break;
   }
