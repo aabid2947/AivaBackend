@@ -386,8 +386,11 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         // Validate call time is in the future
         if (updatedApptDetails.callTime) {
           const callTime = new Date(updatedApptDetails.callTime);
+          // Get current time in Kenya timezone
           const now = new Date();
-          if (callTime <= now) {
+          const kenyaNow = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
+          
+          if (callTime <= kenyaNow) {
             validationErrors.push("The call time should be in the future. Please provide a future date and time for when I should make the call.");
           }
         }
@@ -402,8 +405,13 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           if (updatedApptDetails.userName && !updatedApptDetails.userName.includes(' ')) {
             updatedApptDetails.userName = null;
           }
-          if (updatedApptDetails.callTime && new Date(updatedApptDetails.callTime) <= new Date()) {
-            updatedApptDetails.callTime = null;
+          if (updatedApptDetails.callTime) {
+            const callTime = new Date(updatedApptDetails.callTime);
+            const now = new Date();
+            const kenyaNow = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
+            if (callTime <= kenyaNow) {
+              updatedApptDetails.callTime = null;
+            }
           }
           await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
         } else {

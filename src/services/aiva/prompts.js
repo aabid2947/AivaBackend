@@ -11,10 +11,27 @@ import { ReplyTypes, IntentCategories, EmailMonitoringPreferences } from './cons
  * @returns {string} The generated prompt for the AI model.
  */
 export function getAppointmentTimeSuggestionAnalysisPrompt(transcribedText, userName, reasonForAppointment) {
+    // Get current date and time in Kenyan timezone
+    const now = new Date();
+    const kenyaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
+    const currentKenyaDateTime = kenyaTime.toLocaleString('en-KE', {
+        timeZone: 'Africa/Nairobi',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+    });
+
     return `You are an AI assistant analyzing a user's response in an automated phone call.
 The call is on behalf of "${userName}" regarding "${reasonForAppointment}".
 The user was asked: "What time would be best for the appointment?"
 The user replied: "${transcribedText}"
+
+CURRENT DATE AND TIME IN KENYA: ${currentKenyaDateTime}
+TIMEZONE: EAT (East Africa Time, UTC+3)
 
 Your task is to analyze this response and classify it into one of the following statuses, returning ONLY a single valid JSON object.
 
@@ -23,16 +40,14 @@ Your task is to analyze this response and classify it into one of the following 
 - **QUESTION**: The user asks a question instead of providing a time.
 - **UNCLEAR**: The response is too vague, ambiguous, or irrelevant to be acted upon.
 
-Today's date is ${new Date().toDateString()}. The user is in the EAT (East Africa Time, UTC+3) timezone.
-
 Based on the user's reply, return a JSON object with the following structure:
-- If the status is 'TIME_SUGGESTED', include a "suggested_iso_string" with the full ISO 8601 date and time.
+- If the status is 'TIME_SUGGESTED', include a "suggested_iso_string" with the full ISO 8601 date and time using the current Kenya time as reference.
 - If the status is 'CANNOT_SCHEDULE', include a "reason".
 - If the status is 'QUESTION', include the "question".
 - If the status is 'UNCLEAR', no other fields are needed.
 
-Examples:
-- User: "Yeah, how about tomorrow at 3 PM?" -> {"status": "TIME_SUGGESTED", "suggested_iso_string": "2025-07-29T15:00:00+03:00"}
+Examples (using current Kenya time as reference):
+- User: "Yeah, how about tomorrow at 3 PM?" -> {"status": "TIME_SUGGESTED", "suggested_iso_string": "YYYY-MM-DDTHH:mm:ss+03:00"} (calculate tomorrow from current Kenya date)
 - User: "I can't talk right now, I'm driving." -> {"status": "CANNOT_SCHEDULE", "reason": "User is driving."}
 - User: "Is the clinic open on Saturdays?" -> {"status": "QUESTION", "question": "Is the clinic open on Saturdays?"}
 - User: "I'm not sure." -> {"status": "UNCLEAR"}
@@ -79,6 +94,21 @@ export function getFollowUpQuestionAnswerPrompt(appointmentDetails, question) {
 
 export function getAppointmentDetailsExtractionPrompt(userMessage, existingDetails) {
   const detailsString = JSON.stringify(existingDetails, null, 2);
+  
+  // Get current date and time in Kenyan timezone
+  const now = new Date();
+  const kenyaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
+  const currentKenyaDateTime = kenyaTime.toLocaleString('en-KE', {
+    timeZone: 'Africa/Nairobi',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+  
   return `An AI assistant is helping a user book an appointment. It needs to collect these ESSENTIAL parameters:
 
 REQUIRED PARAMETERS:
@@ -96,6 +126,9 @@ ${detailsString}
 
 USER'S NEW MESSAGE: "${userMessage}"
 
+CURRENT DATE AND TIME IN KENYA: ${currentKenyaDateTime}
+TIMEZONE: EAT (East Africa Time, UTC+3)
+
 VALIDATION RULES:
 1. **Phone Number Format**: Both userContact and bookingContactNumber must:
    - Include country code (+ followed by digits)
@@ -108,9 +141,12 @@ VALIDATION RULES:
 3. **Invalid Phone Numbers**: If a phone number is clearly invalid (too long, has letters, wrong format), set it to "INVALID_FORMAT"
 
 4. **Call Time**: Convert to ISO 8601 format with EAT timezone (+03:00)
-   - Today is ${new Date().toDateString()}
-   - User timezone: EAT (UTC+3)
-   - Example: "tomorrow 2 PM" → "2025-09-17T14:00:00+03:00"
+   - Use the current Kenya time above as reference
+   - When user says "tomorrow", it means the next day from the current Kenya date
+   - When user says "today", it means the current Kenya date
+   - Examples: 
+     * If today is Monday Sept 21, 2025 and user says "tomorrow 2 PM" → "2025-09-22T14:00:00+03:00"
+     * If user says "next Monday 10 AM" → calculate the next Monday and convert to "YYYY-MM-DDTHH:mm:ss+03:00"
 
 5. **Name Validation**: userName should be a proper full name (first + last), not just first name
 
@@ -124,7 +160,7 @@ Example output format:
   "userContact": "+254712345678", 
   "bookingContactNumber": "+254701234567",
   "reasonForAppointment": "dental checkup",
-  "callTime": "2025-09-17T14:00:00+03:00",
+  "callTime": "2025-09-22T14:00:00+03:00",
   "extraDetails": "ask for Dr. Smith"
 }`;
 }
@@ -132,12 +168,30 @@ Example output format:
 // Enhanced prompt for handling appointment detail corrections
 export function getAppointmentCorrectionPrompt(userMessage, currentDetails) {
   const detailsString = JSON.stringify(currentDetails, null, 2);
+  
+  // Get current date and time in Kenyan timezone
+  const now = new Date();
+  const kenyaTime = new Date(now.toLocaleString('en-US', { timeZone: 'Africa/Nairobi' }));
+  const currentKenyaDateTime = kenyaTime.toLocaleString('en-KE', {
+    timeZone: 'Africa/Nairobi',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+  
   return `A user wants to correct some appointment booking details. 
 
 CURRENT APPOINTMENT DETAILS:
 ${detailsString}
 
 USER'S CORRECTION MESSAGE: "${userMessage}"
+
+CURRENT DATE AND TIME IN KENYA: ${currentKenyaDateTime}
+TIMEZONE: EAT (East Africa Time, UTC+3)
 
 Analyze what the user wants to change and return a JSON object with ONLY the fields that need to be updated. Keep all other fields unchanged.
 
@@ -146,11 +200,15 @@ VALIDATION RULES (same as before):
 2. If bookingContactNumber equals userContact, set to "SAME_AS_USER"  
 3. Invalid phone formats should be set to "INVALID_FORMAT"
 4. Convert call times to ISO 8601 format with EAT timezone (+03:00)
+   - Use the current Kenya time above as reference for relative dates
+   - "tomorrow" means the next day from current Kenya date
+   - "today" means the current Kenya date
+   - Example: If today is ${kenyaTime.toDateString()} and user says "tomorrow 3 PM" → "${new Date(kenyaTime.getTime() + 24*60*60*1000).toISOString().split('T')[0]}T15:00:00+03:00"
 
 Examples:
 - User: "Change the phone number to +254701234567" → {"bookingContactNumber": "+254701234567"}
 - User: "Make it for dental checkup instead" → {"reasonForAppointment": "dental checkup"}
-- User: "Call tomorrow at 3 PM instead" → {"callTime": "2025-09-17T15:00:00+03:00"}
+- User: "Call tomorrow at 3 PM instead" → {"callTime": "${new Date(kenyaTime.getTime() + 24*60*60*1000).toISOString().split('T')[0]}T15:00:00+03:00"}
 
 Return ONLY a JSON object with the updated fields.`;
 }

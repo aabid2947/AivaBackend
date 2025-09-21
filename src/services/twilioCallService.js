@@ -1,6 +1,6 @@
 // src/services/twilioCallService.js
 import twilio from 'twilio';
-import { db } from '../config/firebaseAdmin.js';
+import { db, admin } from '../config/firebaseAdmin.js';
 import { generateGeminiText } from '../utils/geminiClient.js';
 
 // Conversation states to track the flow
@@ -31,7 +31,7 @@ const getAppointmentTimeSuggestionAnalysisPrompt = (transcribedText, userName, r
         });
     }
 
-    return `You are an intelligent appointment booking assistant for a healthcare practice. 
+    return `You are a friendly, conversational appointment booking assistant for a healthcare practice. You should sound natural and human-like, not robotic.
     
     CONTEXT:
     - You are calling to schedule an appointment for "${userName}" regarding "${reason}"
@@ -78,16 +78,16 @@ const getAffirmativeNegativeClassificationPrompt = (userReply, suggestedTime, co
         contextInfo = `\nRecent conversation:\n${conversationHistory.slice(-2).map(entry => `${entry.speaker}: "${entry.message}"`).join('\n')}`;
     }
 
-    return `The user was asked to confirm an appointment time: "${suggestedTime}".
+    return `A person was asked to confirm an appointment time: "${suggestedTime}".
     Their reply: "${userReply}"
     ${contextInfo}
     
     Classify this response as:
-    - "AFFIRMATIVE" - Yes, agreed, confirmed (examples: "yes", "that works", "perfect", "sounds good", "okay")
-    - "NEGATIVE" - No, disagree, want different time (examples: "no", "that doesn't work", "can we try different time")
+    - "AFFIRMATIVE" - Yes, agreed, confirmed (examples: "yes", "that works", "perfect", "sounds good", "okay", "sure", "alright")
+    - "NEGATIVE" - No, disagree, want different time (examples: "no", "that doesn't work", "can we try different time", "not good for me")
     - "UNCLEAR" - Ambiguous or hard to understand
     
-    Consider the tone and context. Return only: AFFIRMATIVE, NEGATIVE, or UNCLEAR`;
+    Consider the natural conversational tone and context. Return only: AFFIRMATIVE, NEGATIVE, or UNCLEAR`;
 };
 
 // --- Helper functions for conversation management ---
@@ -169,6 +169,100 @@ async function handleGeminiError(error, context, fallbackResponse = null) {
     });
 }
 
+// Notification function for appointment booking confirmation
+async function sendAppointmentBookingNotification(appointment, confirmedTime) {
+    try {
+        // Validate required appointment data
+        if (!appointment.userId) {
+            console.warn(`[WARNING] Cannot send notification: appointment missing userId`);
+            return false;
+        }
+
+        // Get user's FCM token
+        const userRef = db.collection('users').doc(appointment.userId);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists || !userDoc.data().fcmToken) {
+            console.warn(`User ${appointment.userId} does not have an FCM token. Skipping notification.`);
+            return false;
+        }
+
+        const fcmToken = userDoc.data().fcmToken;
+        const cleanUserName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+        
+        // Create a natural appointment confirmation message using Gemini
+        const prompt = `
+You are a friendly assistant. Create a short, warm appointment confirmation message for a user.
+
+Context:
+- Patient name: ${cleanUserName}
+- Appointment for: ${appointment.reasonForAppointment || 'medical consultation'}
+- Confirmed time: ${new Date(confirmedTime).toLocaleString('en-US', { 
+    weekday: 'long', 
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric', 
+    minute: 'numeric', 
+    hour12: true 
+})}
+
+Create a brief, friendly confirmation message (under 50 words) that includes the appointment time.
+Sound natural and welcoming, not robotic.
+
+Respond with ONLY the confirmation message.`;
+
+        let notificationBody;
+        try {
+            notificationBody = await generateGeminiText(prompt);
+        } catch (geminiError) {
+            console.warn(`[WARNING] Gemini failed for notification message: ${geminiError.message}`);
+            // Fallback message
+            notificationBody = `Your appointment is confirmed for ${new Date(confirmedTime).toLocaleString('en-US', { 
+                weekday: 'long', 
+                month: 'short',
+                day: 'numeric',
+                hour: 'numeric', 
+                minute: 'numeric', 
+                hour12: true 
+            })}. We look forward to seeing you!`;
+        }
+
+        const message = {
+            notification: {
+                title: '✅ Appointment Confirmed',
+                body: notificationBody.trim(),
+            },
+            token: fcmToken,
+            data: {
+                appointmentId: appointment.id || '',
+                userId: appointment.userId || '',
+                type: 'appointment_confirmed',
+                confirmedTime: confirmedTime
+            }
+        };
+
+        const response = await admin.messaging().send(message);
+        console.log(`[INFO] Successfully sent appointment confirmation notification:`, response);
+        return true;
+
+    } catch (error) {
+        console.error(`[ERROR] Failed to send appointment booking notification:`, error);
+        
+        // Handle invalid FCM token
+        if (error.code === 'messaging/registration-token-not-registered') {
+            console.warn(`FCM token not registered for user ${appointment.userId}. Removing token from user profile.`);
+            try {
+                await db.collection('users').doc(appointment.userId).set({ fcmToken: null }, { merge: true });
+                console.log(`Removed invalid FCM token for user ${appointment.userId}`);
+            } catch (removeError) {
+                console.error(`Failed to remove invalid FCM token for user ${appointment.userId}:`, removeError);
+            }
+        }
+        
+        return false;
+    }
+}
+
 // Safe JSON parsing with error handling
 function safeJsonParse(jsonString, context = '') {
     try {
@@ -205,22 +299,23 @@ export async function initiateAppointmentFlow(appointmentId) {
             lastActivity: new Date().toISOString()
         });
 
-        // Build personalized greeting
-        let initialGreeting = `Hello, this is an automated assistant from Aiva healthcare services, calling on behalf of ${appointment.userName} to schedule an appointment.`;
+        // Build personalized greeting with clean name (remove Dr. prefix if present)
+        const cleanUserName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+        let initialGreeting = `Hi there! I'm calling from Aiva Health on behalf of ${cleanUserName} to help schedule an appointment.`;
         
-        // Add reason with more context
+        // Add reason with more context in a natural way
         if (appointment.reasonForAppointment) {
-            initialGreeting += ` The appointment is regarding ${appointment.reasonForAppointment}.`;
+            initialGreeting += ` This is for ${appointment.reasonForAppointment}.`;
         } else {
-            initialGreeting += ` The appointment is for a medical consultation.`;
+            initialGreeting += ` This is for a medical consultation.`;
         }
         
-        // Add extra details if provided
+        // Add extra details if provided in a conversational manner
         if (appointment.extraDetails) {
-            initialGreeting += ` I also have this special instruction: ${appointment.extraDetails}.`;
+            initialGreeting += ` I also wanted to mention: ${appointment.extraDetails}.`;
         }
         
-        const firstQuestion = "What time would be best for this appointment?";
+        const firstQuestion = "What time works best for you?";
 
         // Log the initial conversation
         await addToConversationHistory(appointmentId, 'assistant', initialGreeting + ' ' + firstQuestion);
@@ -255,7 +350,7 @@ export async function initiateAppointmentFlow(appointmentId) {
             console.error(`[ERROR] Could not log initialization failure: ${logError.message}`);
         }
         
-        twiml.say({ voice: 'alice', rate: 'medium' }, "Sorry, we're experiencing technical difficulties. A representative will contact you shortly to schedule your appointment. Goodbye.");
+        twiml.say({ voice: 'alice', rate: 'medium' }, "Sorry, I'm having some technical issues right now. Someone from our team will reach out to schedule your appointment. Thanks for calling!");
         twiml.hangup();
         return twiml;
     }
@@ -277,7 +372,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             
             const retries = (appointment.retries || 0) + 1;
             if (retries >= MAX_RETRIES) {
-                twiml.say({ voice: 'alice', rate: 'medium' }, "I haven't heard a response. A representative will call you back to schedule the appointment. Goodbye.");
+                twiml.say({ voice: 'alice', rate: 'medium' }, "I haven't been able to hear from you. Let me have someone from our team call you back to get this scheduled. Take care!");
                 twiml.hangup();
                 await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
                     failureReason: 'Multiple timeouts without response',
@@ -292,7 +387,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                     speechModel: 'experimental_conversations',
                     enhanced: true
                 });
-                gather.say({ voice: 'alice', rate: 'medium' }, "I didn't hear anything. Could you please tell me what time would work best for your appointment?");
+                gather.say({ voice: 'alice', rate: 'medium' }, "I didn't catch that. What time works best for you?");
                 twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             }
             return twiml;
@@ -307,7 +402,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 speechTimeout: 'auto',
                 speechModel: 'experimental_conversations'
             });
-            gather.say({ voice: 'alice', rate: 'medium' }, "I couldn't hear you clearly. Could you please repeat what time would work best?");
+            gather.say({ voice: 'alice', rate: 'medium' }, "I couldn't hear you clearly. What time works best for you?");
             twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             return twiml;
         }
@@ -316,9 +411,10 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         await addToConversationHistory(appointmentId, 'user', transcribedText);
 
         // Analyze response with enhanced context
+        const cleanUserName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
         const analysisPrompt = getAppointmentTimeSuggestionAnalysisPrompt(
             transcribedText, 
-            appointment.userName, 
+            cleanUserName, 
             appointment.reasonForAppointment || 'medical consultation',
             conversationHistory,
             currentState
@@ -366,7 +462,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             console.error(`[ERROR] Could not log critical error: ${logError.message}`);
         }
 
-        twiml.say({ voice: 'alice', rate: 'medium' }, "I'm experiencing technical difficulties. A representative will contact you shortly to complete the appointment booking. Goodbye.");
+        twiml.say({ voice: 'alice', rate: 'medium' }, "I'm having some technical difficulties right now. Let me have someone from our team call you back to get this sorted out. Thanks so much for your patience!");
         twiml.hangup();
         return twiml;
     }
@@ -389,13 +485,13 @@ async function handleTimeSuggestion(appointmentId, analysisResult, twiml, appoin
             // Check if the suggested time is in the past
             const now = new Date();
             if (suggestedTime < now) {
-                await addToConversationHistory(appointmentId, 'assistant', 'I noticed that time is in the past. Let me ask for a future time.');
+                await addToConversationHistory(appointmentId, 'assistant', 'I noticed that time has already passed. Let me ask for a future time.');
                 const gather = twiml.gather({
                     input: 'speech',
                     action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
                     speechTimeout: 'auto'
                 });
-                gather.say({ voice: 'alice', rate: 'medium' }, "I noticed that time has already passed. Could you suggest a future date and time for the appointment?");
+                gather.say({ voice: 'alice', rate: 'medium' }, "Oh, I think that time has already passed. Could you give me a future date and time that works for you?");
                 twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
                 return twiml;
             }
@@ -418,12 +514,12 @@ async function handleTimeSuggestion(appointmentId, analysisResult, twiml, appoin
                 action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
                 speechTimeout: 'auto'
             });
-            gather.say({ voice: 'alice', rate: 'medium' }, "I had trouble understanding the exact time. Could you please be more specific about the date and time you prefer?");
+            gather.say({ voice: 'alice', rate: 'medium' }, "I'm having trouble understanding the exact time. Could you be a bit more specific about when you'd like to come in?");
             twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             return twiml;
         }
 
-        const confirmationQuestion = `Perfect! Just to confirm, you'd like to schedule the appointment for ${formattedTime}. Is that correct?`;
+        const confirmationQuestion = `Great! So that's ${formattedTime}. Does that work for you?`;
         
         await addToConversationHistory(appointmentId, 'assistant', confirmationQuestion);
         await updateConversationState(appointmentId, CONVERSATION_STATES.CONFIRMING_TIME, {
@@ -451,8 +547,8 @@ async function handleTimeSuggestion(appointmentId, analysisResult, twiml, appoin
 
 async function handleCannotSchedule(appointmentId, analysisResult, twiml, appointment) {
     const response = analysisResult.should_retry ? 
-        "I understand. Is there anything else I can help clarify about the appointment? Otherwise, a representative will follow up with you." :
-        "I understand. Thank you for letting me know. I'll make sure this information is relayed appropriately.";
+        "I understand. Is there anything else you'd like to know about the appointment? Otherwise, someone from our team will reach out to you." :
+        "No problem at all. Thanks for letting me know. I'll make sure to pass this along to the right person.";
     
     await addToConversationHistory(appointmentId, 'assistant', response);
     
@@ -479,29 +575,31 @@ async function handleCannotSchedule(appointmentId, analysisResult, twiml, appoin
 async function handleUserQuestion(appointmentId, analysisResult, twiml, appointment, conversationHistory) {
     try {
         const questionType = analysisResult.question_type || 'general';
+        const cleanUserName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
         
         let answerPrompt;
         if (questionType === 'availability') {
             answerPrompt = `The user is asking about availability for scheduling an appointment.
-            Appointment details: For ${appointment.userName} regarding ${appointment.reasonForAppointment || 'medical consultation'}.
+            Appointment details: For ${cleanUserName} regarding ${appointment.reasonForAppointment || 'medical consultation'}.
             User's question: "${analysisResult.question}"
             
-            Provide a helpful response about general availability (mention they can suggest any time that works for them), 
-            then ask again "What time would work best for your appointment?"
-            Keep response under 25 words for the answer, then ask the question.`;
+            Respond in a friendly, conversational way about general availability. Mention they can suggest any time that works for them.
+            Then ask "What time works best for you?" in a natural way.
+            Keep the response casual and helpful, under 25 words total.`;
         } else {
             answerPrompt = `The user has a question about scheduling an appointment.
-            Appointment details: For ${appointment.userName} regarding ${appointment.reasonForAppointment || 'medical consultation'}.
+            Appointment details: For ${cleanUserName} regarding ${appointment.reasonForAppointment || 'medical consultation'}.
             User's question: "${analysisResult.question}"
             
-            Provide a brief, helpful answer (under 20 words), then ask "What time would work best for your appointment?"`;
+            Give a brief, friendly answer (under 20 words), then naturally ask "What time works best for you?"
+            Sound conversational and helpful, not robotic.`;
         }
         
         let answerText;
         try {
             answerText = await generateGeminiText(answerPrompt);
         } catch (geminiError) {
-            answerText = "I'd be happy to help with that. What time would work best for your appointment?";
+            answerText = "I'd be happy to help with that. What time works best for you?";
         }
         
         await addToConversationHistory(appointmentId, 'assistant', answerText, { questionType });
@@ -528,11 +626,11 @@ async function handleNeedMoreInfo(appointmentId, analysisResult, twiml, appointm
     
     let response;
     if (infoNeeded.includes('doctor') || infoNeeded.includes('provider')) {
-        response = `This appointment is for ${appointment.reasonForAppointment || 'a medical consultation'}. What time would work best for you?`;
+        response = `This appointment is for ${appointment.reasonForAppointment || 'a medical consultation'}. What time works best for you?`;
     } else if (infoNeeded.includes('location') || infoNeeded.includes('where')) {
-        response = `You'll receive location details once the appointment is confirmed. What time would work best for you?`;
+        response = `Sure! You'll get all the location details once we confirm your appointment time. What time works for you?`;
     } else {
-        response = `I can provide more details once we schedule the time. What time would work best for your appointment?`;
+        response = `I can share more details once we get your time sorted out. When would you like to come in?`;
     }
     
     await addToConversationHistory(appointmentId, 'assistant', response, { infoRequested: infoNeeded });
@@ -554,7 +652,7 @@ async function handleAmbiguousResponse(appointmentId, analysisResult, twiml, app
     
     await addToConversationHistory(appointmentId, 'system', `Ambiguous response: ${interpretation}`, { ambiguous: true });
     
-    const clarificationPrompt = `I want to make sure I understand correctly. Could you please be more specific about ${clarificationNeeded}?`;
+    const clarificationPrompt = `I want to make sure I get this right. Could you be a bit more specific about ${clarificationNeeded}?`;
     
     await addToConversationHistory(appointmentId, 'assistant', clarificationPrompt);
     await updateConversationState(appointmentId, CONVERSATION_STATES.CLARIFYING_TIME);
@@ -587,7 +685,7 @@ async function handleUnclearResponse(appointmentId, analysisResult, twiml, appoi
     });
 
     if (retries >= MAX_RETRIES || clarificationAttempts >= MAX_CLARIFICATION_ATTEMPTS) {
-        const finalMessage = "I'm having trouble understanding. A representative will contact you shortly to help schedule your appointment. Thank you for your patience. Goodbye.";
+        const finalMessage = "I'm having a hard time hearing you clearly. Let me have someone from our team call you back to schedule this appointment. Thanks so much for your patience!";
         
         twiml.say({ voice: 'alice', rate: 'medium' }, finalMessage);
         twiml.hangup();
@@ -598,8 +696,8 @@ async function handleUnclearResponse(appointmentId, analysisResult, twiml, appoi
         });
     } else {
         const clarificationMessage = retries === 1 ? 
-            "I'm sorry, I didn't quite catch that. Could you please tell me what date and time would work best for your appointment?" :
-            "I'm still having trouble hearing you clearly. Could you please speak a bit louder and tell me your preferred appointment time?";
+            "Sorry, I didn't quite catch that. What day and time work best for you?" :
+            "I'm still having trouble hearing you. Could you speak a little louder? When would you like to schedule this?";
         
         await addToConversationHistory(appointmentId, 'assistant', clarificationMessage);
         
@@ -630,7 +728,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             
             const retries = (appointment.confirmationRetries || 0) + 1;
             if (retries >= 2) {
-                twiml.say({ voice: 'alice', rate: 'medium' }, "I didn't get a confirmation. A representative will call you back to finalize the appointment details. Goodbye.");
+                twiml.say({ voice: 'alice', rate: 'medium' }, "I haven't heard back from you. Let me have someone call you to wrap this up. Thanks!");
                 twiml.hangup();
                 await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
                     failureReason: 'Multiple confirmation timeouts',
@@ -648,7 +746,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                     hour12: true 
                 });
                 
-                const retryMessage = `I didn't hear a response. To confirm the appointment for ${formattedTime}, please say 'yes' or 'no'.`;
+                const retryMessage = `I didn't hear you there. For ${formattedTime}, just say 'yes' or 'no'.`;
                 const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
                 
                 const gatherRetry = twiml.gather({ 
@@ -677,7 +775,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 hour12: true 
             });
             
-            const clarifyMessage = `I couldn't hear you. To confirm your appointment for ${formattedTime}, please say 'yes' if this time works, or 'no' if you'd like a different time.`;
+            const clarifyMessage = `I couldn't hear you clearly. For ${formattedTime}, just say 'yes' if that works or 'no' if you need a different time.`;
             const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
             
             const gatherClarify = twiml.gather({ 
@@ -716,7 +814,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         console.log(`[INFO] Confirmation classification for ${appointmentId}: ${confirmationClassification}`);
 
         if (confirmationClassification === 'AFFIRMATIVE') {
-            const successMessage = "Excellent! Your appointment is confirmed. You'll receive a confirmation message with all the details shortly. Thank you, and goodbye.";
+            const successMessage = "Perfect! Your appointment is all set. You'll get a confirmation text with all the details in just a bit. Thanks so much!";
             
             twiml.say({ voice: 'alice', rate: 'medium' }, successMessage);
             twiml.hangup();
@@ -728,8 +826,22 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 notes: `Appointment confirmed for ${new Date(timeToConfirmISO).toLocaleString()}. Final confirmation: "${transcribedText}"`
             });
             
+            // Send notification to user about appointment confirmation
+            // This follows the same pattern as reminderServices.js for FCM notifications
+            try {
+                const notificationSent = await sendAppointmentBookingNotification(appointment, timeToConfirmISO);
+                if (notificationSent) {
+                    console.log(`[INFO] Appointment confirmation notification sent for ${appointmentId}`);
+                } else {
+                    console.log(`[INFO] Appointment confirmation notification not sent for ${appointmentId} (no FCM token or other issue)`);
+                }
+            } catch (notificationError) {
+                console.error(`[WARNING] Failed to send appointment notification for ${appointmentId}:`, notificationError.message);
+                // Don't let notification failure affect the appointment confirmation
+            }
+            
         } else if (confirmationClassification === 'NEGATIVE') {
-            const retryMessage = "No problem! Let's find a better time. What time would work better for your appointment?";
+            const retryMessage = "No worries! Let's find a time that works better. When would you prefer?";
             
             await addToConversationHistory(appointmentId, 'assistant', retryMessage, { retryingTime: true });
             await updateConversationState(appointmentId, CONVERSATION_STATES.ASKING_TIME, {
@@ -751,7 +863,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             await appointmentRef.update({ confirmationClarifications: clarificationAttempts });
             
             if (clarificationAttempts >= 2) {
-                const escalateMessage = "I'm having trouble understanding your response. A representative will contact you shortly to finalize the appointment. Thank you for your patience. Goodbye.";
+                const escalateMessage = "I'm having trouble understanding. Let me have someone from our team call you back to get this sorted out. Thanks for being patient with me!";
                 
                 twiml.say({ voice: 'alice', rate: 'medium' }, escalateMessage);
                 twiml.hangup();
@@ -771,7 +883,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                     hour12: true 
                 });
                 
-                const clarifyMessage = `I need to confirm your appointment time. For ${formattedTime}, please clearly say 'yes' to confirm or 'no' to choose a different time.`;
+                const clarifyMessage = `Let me double-check this with you. For ${formattedTime}, just say 'yes' if that works or 'no' if you'd like something different.`;
                 const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
                 
                 await addToConversationHistory(appointmentId, 'assistant', clarifyMessage, { clarificationAttempt: clarificationAttempts });
@@ -797,7 +909,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             console.error(`[ERROR] Could not log confirmation error: ${logError.message}`);
         }
 
-        twiml.say({ voice: 'alice', rate: 'medium' }, "I'm experiencing technical difficulties. A representative will contact you to confirm your appointment. Goodbye.");
+        twiml.say({ voice: 'alice', rate: 'medium' }, "I'm having some technical trouble on my end. Someone from our team will give you a call to get this appointment scheduled. Thanks for your patience!");
         twiml.hangup();
         return twiml;
     }
