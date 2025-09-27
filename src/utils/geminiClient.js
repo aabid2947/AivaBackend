@@ -30,7 +30,7 @@ if (!genAI) {
 
 // This model is multimodal and can handle both text and vision
 const modelConfig = {
-  modelName: 'gemini-1.5-flash-001',
+  modelName: 'gemini-2.0-flash-lite',
   generationConfig: {
     temperature: 0.7,
     topK: 1,
