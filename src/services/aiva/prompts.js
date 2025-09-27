@@ -130,17 +130,9 @@ CURRENT DATE AND TIME IN KENYA: ${currentKenyaDateTime}
 TIMEZONE: EAT (East Africa Time, UTC+3)
 
 VALIDATION RULES:
-1. **Phone Number Format**: Both userContact and bookingContactNumber must:
-   - Include country code (+ followed by digits)
-   - Be 10-15 digits total (including country code)
-   - Not contain letters or special characters except +
-   - Example valid: +254712345678, +12345678901
+1. **Phone Number Format**: Extract phone numbers as provided by the user (validation will be handled separately)
 
-2. **Different Numbers**: If bookingContactNumber equals userContact, set bookingContactNumber to "SAME_AS_USER"
-
-3. **Invalid Phone Numbers**: If a phone number is clearly invalid (too long, has letters, wrong format), set it to "INVALID_FORMAT"
-
-4. **Call Time**: Convert to ISO 8601 format with EAT timezone (+03:00)
+2. **Call Time**: Convert to ISO 8601 format with EAT timezone (+03:00)
    - Use the current Kenya time above as reference
    - When user says "tomorrow", it means the next day from the current Kenya date
    - When user says "today", it means the current Kenya date
@@ -196,10 +188,8 @@ TIMEZONE: EAT (East Africa Time, UTC+3)
 Analyze what the user wants to change and return a JSON object with ONLY the fields that need to be updated. Keep all other fields unchanged.
 
 VALIDATION RULES (same as before):
-1. Phone numbers must include country code and be valid format
-2. If bookingContactNumber equals userContact, set to "SAME_AS_USER"  
-3. Invalid phone formats should be set to "INVALID_FORMAT"
-4. Convert call times to ISO 8601 format with EAT timezone (+03:00)
+1. Extract phone numbers as provided by the user (validation will be handled separately)
+2. Convert call times to ISO 8601 format with EAT timezone (+03:00)
    - Use the current Kenya time above as reference for relative dates
    - "tomorrow" means the next day from current Kenya date
    - "today" means the current Kenya date
@@ -213,22 +203,7 @@ Examples:
 Return ONLY a JSON object with the updated fields.`;
 }
 
-// Phone number validation prompt
-export function getPhoneValidationPrompt(phoneNumber, phoneType) {
-  return `Validate this phone number: "${phoneNumber}"
-  
-  This is a ${phoneType} (either "user contact" or "clinic contact").
-  
-  A valid phone number should:
-  - Start with + followed by country code
-  - Have 10-15 total digits (including country code)
-  - Not contain letters or special characters except +
-  
-  Valid examples: +254712345678, +12345678901, +441234567890
-  Invalid examples: 0712345678, +2547123456789123, +254abc123456
-  
-  Return only: "VALID" or "INVALID"`;
-}
+// Phone number validation is now handled in conversationService.js using validateInternationalPhoneNumber()
 
 // Other prompts remain unchanged
 export function getPaymentDetailsExtractionPrompt(userMessage, existingDetails) {

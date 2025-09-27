@@ -6,6 +6,83 @@ import * as Prompts from './prompts.js';
 import { ConversationStates, IntentCategories, ReplyTypes, EmailMonitoringPreferences } from './constants.js';
 import { convertToISOTime } from '../../../helper/convertDateToISO.js';
 
+// Map of country names to their country codes (without '+')
+const COUNTRY_CODE_MAP = {
+  'Kenya': '254',
+  'United States': '1',
+  'India': '91',
+  'United Kingdom': '44',
+  'South Africa': '27',
+  'Nigeria': '234',
+  'Pakistan': '92',
+  'Canada': '1',
+  'Australia': '61',
+  'Germany': '49',
+  'France': '33',
+  'Italy': '39',
+  'Spain': '34',
+  'Brazil': '55',
+  'Russia': '7',
+  'China': '86',
+  'Japan': '81',
+  'Turkey': '90',
+  'Egypt': '20',
+  'Ghana': '233',
+  'Uganda': '256',
+  'Tanzania': '255',
+  'Ethiopia': '251',
+  'Morocco': '212',
+  'Saudi Arabia': '966',
+  'UAE': '971',
+  'Bangladesh': '880',
+  'Indonesia': '62',
+  'Mexico': '52',
+  'Philippines': '63',
+  // ...add more as needed
+};
+
+// Reverse map for quick lookup: code -> country
+const COUNTRY_CODE_LOOKUP = Object.entries(COUNTRY_CODE_MAP).reduce((acc, [country, code]) => {
+  acc[code] = country;
+  return acc;
+}, {});
+
+/**
+ * Checks if a phone number is valid based on country code and digit count.
+ * @param {string} number - The phone number to validate (may start with '+').
+ * @returns {{valid: boolean, message: string, country?: string, localNumber?: string, countryCode?: string}}
+ */
+export function validateInternationalPhoneNumber(number) {
+  if (!number) return { valid: false, message: 'No number provided.' };
+  let num = number.trim();
+  if (num.startsWith('+')) num = num.slice(1);
+  // Try 3, 2, then 1 digit country code
+  for (let len = 3; len >= 1; len--) {
+    const code = num.slice(0, len);
+    if (COUNTRY_CODE_LOOKUP[code]) {
+      const local = num.slice(len);
+      if (/^\d{10}$/.test(local)) {
+        return {
+          valid: true,
+          message: 'Valid number',
+          country: COUNTRY_CODE_LOOKUP[code],
+          localNumber: local,
+          countryCode: code
+        };
+      } else {
+        return {
+          valid: false,
+          message: `Number is not correct: after country code (${code}) should be 10 digits.`
+        };
+      }
+    }
+  }
+  return {
+    valid: false,
+    message: 'Number is not correct: country code not recognized.'
+  };
+}
+
 export async function getConversationState(userId, chatId) {
   const chatRef = db.collection('users').doc(userId).collection('aivaChats').doc(chatId);
   const chatSnap = await chatRef.get();
@@ -328,6 +405,29 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         
         // Merge extracted details with existing details
         updatedApptDetails = { ...existingApptDetails, ...extractedDetails };
+        
+        // Apply our custom phone number validation instead of relying on Gemini
+        if (updatedApptDetails.userContact && updatedApptDetails.userContact !== 'INVALID_FORMAT') {
+          const userContactValidation = validateInternationalPhoneNumber(updatedApptDetails.userContact);
+          if (!userContactValidation.valid) {
+            updatedApptDetails.userContact = 'INVALID_FORMAT';
+          }
+        }
+        
+        if (updatedApptDetails.bookingContactNumber && updatedApptDetails.bookingContactNumber !== 'INVALID_FORMAT' && updatedApptDetails.bookingContactNumber !== 'SAME_AS_USER') {
+          const bookingContactValidation = validateInternationalPhoneNumber(updatedApptDetails.bookingContactNumber);
+          if (!bookingContactValidation.valid) {
+            updatedApptDetails.bookingContactNumber = 'INVALID_FORMAT';
+          }
+        }
+        
+        // Check if both numbers are the same
+        if (updatedApptDetails.userContact && updatedApptDetails.bookingContactNumber && 
+            updatedApptDetails.userContact !== 'INVALID_FORMAT' && updatedApptDetails.bookingContactNumber !== 'INVALID_FORMAT' &&
+            updatedApptDetails.userContact === updatedApptDetails.bookingContactNumber) {
+          updatedApptDetails.bookingContactNumber = 'SAME_AS_USER';
+        }
+        
       } catch (e) {
         console.error("Failed to parse appointment details JSON:", e, extractedApptDetailsRaw);
         aivaResponseContent = "I'm having trouble understanding. Could you please rephrase that? I need clear information for the appointment booking.";
@@ -337,7 +437,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
 
       // Handle phone number validation errors
       if (updatedApptDetails.bookingContactNumber === 'INVALID_FORMAT') {
-        aivaResponseContent = "That doesn't seem to be a valid phone number for the clinic. Please provide a correct phone number with country code (e.g., +254712345678 or +1234567890).";
+        aivaResponseContent = "That doesn't seem to be a valid phone number for the clinic. Number is not correct: please provide a valid phone number with country code followed by exactly 10 digits (e.g., +254712345678 or +1234567890).";
         updatedApptDetails.bookingContactNumber = null;
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
@@ -345,7 +445,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       }
 
       if (updatedApptDetails.userContact === 'INVALID_FORMAT') {
-        aivaResponseContent = "Your phone number doesn't seem to be in the correct format. Please provide your phone number with country code (e.g., +254712345678 or +1234567890).";
+        aivaResponseContent = "Number is not correct: please provide your phone number with country code followed by exactly 10 digits (e.g., +254712345678 or +1234567890).";
         updatedApptDetails.userContact = null;
         nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
         await updateConversationState(userId, chatId, nextState, { appointmentDetails: updatedApptDetails });
@@ -371,6 +471,21 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
       if (missingApptDetails.length === 0) {
         // All essential details collected, do final validation
         let validationErrors = [];
+        
+        // Final validation of phone numbers using our validation function
+        if (updatedApptDetails.userContact) {
+          const userContactValidation = validateInternationalPhoneNumber(updatedApptDetails.userContact);
+          if (!userContactValidation.valid) {
+            validationErrors.push(`Your phone number is not valid: ${userContactValidation.message}`);
+          }
+        }
+        
+        if (updatedApptDetails.bookingContactNumber) {
+          const bookingContactValidation = validateInternationalPhoneNumber(updatedApptDetails.bookingContactNumber);
+          if (!bookingContactValidation.valid) {
+            validationErrors.push(`The clinic phone number is not valid: ${bookingContactValidation.message}`);
+          }
+        }
         
         // Validate phone numbers are different
         if (updatedApptDetails.userContact && updatedApptDetails.bookingContactNumber && 
