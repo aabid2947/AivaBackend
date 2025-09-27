@@ -30,7 +30,7 @@ if (!genAI) {
 
 // This model is multimodal and can handle both text and vision
 const modelConfig = {
-  modelName: 'gemini-1.5-flash-latest',
+  modelName: 'gemini-1.5-flash-001',
   generationConfig: {
     temperature: 0.7,
     topK: 1,
@@ -133,8 +133,10 @@ export async function generateGeminiVisionResponse(prompt, imageBuffer, imageMim
     }
 }
 
-
-
+/**
+ * Lists available Gemini models using the GoogleGenerativeAI client.
+ * @returns {Promise<Array|undefined>} Array of model objects or undefined if error.
+ */
 
 // --- NEW FUNCTION for Audio Transcription ---
 

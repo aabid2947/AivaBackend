@@ -17,6 +17,7 @@ import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js'
 // import { test } from './src/cron/appointmentScheduler.js';
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -77,6 +78,7 @@ return next(err);
 }
 res.status(500).json({ message: 'Something broke on the server\!' });
 });
+
 
 app.listen(PORT, () => {
 console.log(`AIVA API Server running on port ${PORT}`);
