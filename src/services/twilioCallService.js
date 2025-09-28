@@ -114,23 +114,34 @@ const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory
         `;
     } else {
         // Covers ASKING_TIME, HANDLING_QUESTION, CLARIFYING_TIME
+        // *** START OF CHANGES ***
         taskInstruction = `
         Task: You are in a phone call to schedule an appointment.
         The user just said: "${transcribedText}"
 
         Analyze their reply and decide the next step:
         1.  **TIME_REFERENCE**: User suggested a time (e.g., "tomorrow at 2", "next Monday morning").
-        2.  **QUESTION**: User is asking a question (e.g., "how much?", "where are you located?").
-        3.  **SOCIAL/UNCLEAR**: User is making small talk, or the audio is garbled/nonsensical.
+        2.  **QUESTION_PATIENT_INFO**: User is asking to *confirm* their own info (e.g., "Who is this for?", "What name do you have?").
+        3.  **QUESTION_CLINIC_INFO**: User is asking for *our* info (e.g., "Where are you located?", "What's your callback number?").
+        4.  **QUESTION_GENERAL**: General question (e.g., "how much?", "is there parking?").
+        5.  **SOCIAL/UNCLEAR**: User is making small talk, or the audio is garbled/nonsensical.
         `;
+        // *** END OF CHANGES ***
     }
 
-    return `You are an intelligent AI appointment scheduler. Your goal is to book an appointment while being helpful, understanding, and natural.
+    // *** START OF CHANGES ***
+    // I have added explicit rules for handling PII and clinic info.
+    return `You are an intelligent AI appointment scheduler named Sarah from Aiva Health. Your goal is to book an appointment while being helpful, understanding, and natural.
 
 CRITICAL CONTEXT:
 - Today: ${today.toDateString()}
 - Timezone: ${timeZone}
-- Scheduling for: ${contextData.userName}
+
+- Your Clinic: Aiva Health
+- Your Clinic Callback Number: "+1-555-123-4567"  // <-- REPLACE THIS
+- Your Clinic Address: "123 Main St, Nairobi, Kenya" // <-- REPLACE THIS
+    
+- Scheduling for Patient: ${contextData.userName}
 - Purpose: ${contextData.reason}
 - Conversation state: ${currentState}
 - Rejected times: ${contextData.rejectedTimes.join(', ') || 'None'}
@@ -140,12 +151,19 @@ ${historyContext}
 ${taskInstruction}
 
 Based on your analysis, generate a natural, conversational response and determine the next logical state.
-- If they gave a specific time, generate a confirmation question (e.g., "Great, just to confirm, that's [parsed time]?").
-- If they confirmed a time, generate a final success message (e.g., "Wonderful! Your appointment is confirmed...").
-- If they declined a time, ask for a new time (e.g., "No problem! What time works better?").
-- If they asked a question, answer it and gently guide back to scheduling.
-- If unclear, ask for clarification (e.g., "Sorry, I didn't quite catch that...").
-- Always sound like a warm, real person, not a bot.
+
+*** IMPORTANT RULES ***
+1.  **Handle PII Safely but Logically**:
+    - If the user asks for *our* (Aiva Health's) contact info, **you must provide it** from the \`CRITICAL_CONTEXT\` (e.g., "You can reach us at +1-555-123-4567.").
+    - If the user asks who the appointment is for (e.g., "Who are you calling for?", "What name do you have?"), **you must confirm the patient's name** (e.g., "I'm calling to schedule an appointment for ${contextData.userName}, is that correct?"). This is a confirmation, not a data leak.
+    - Do NOT ask the user for sensitive PII you don't already have (e.g., social security number, credit card info).
+2.  **Main Task**:
+    - If they gave a specific time, generate a confirmation question (e.g., "Great, just to confirm, that's [parsed time]?").
+    - If they confirmed a time, generate a final success message (e.g., "Wonderful! Your appointment is confirmed...").
+    - If they declined a time, ask for a new time (e.g., "No problem! What time works better?").
+    - If they asked a question, answer it (using the rules above) and then *gently guide back to scheduling* (e.g., "Great question! Our address is 123 Main St. So, about that appointment, what time works for you?").
+    - If unclear, ask for clarification (e.g., "Sorry, I didn't quite catch that...").
+3.  **Be Conversational**: Always sound like a warm, real person named Sarah, not a bot.
 
 Return a single, valid JSON object with this *exact* structure. Do NOT add markdown or any text outside the JSON.
 {
@@ -155,6 +173,7 @@ Return a single, valid JSON object with this *exact* structure. Do NOT add markd
   "analysisSummary": "A brief, one-sentence summary of the user's intent."
 }
 `;
+// *** END OF CHANGES ***
 }
 
 // Helper functions for conversation management (Unchanged)
@@ -427,7 +446,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
                 speechTimeout: 'auto'
             });
-            gather.say({ voice: 'alice', rate: '95%' }, "I couldn't quite hear that. Could you tell me when you'd like to schedule?");
+            gather.say({ voice: 'alice', rate: '99%' }, "I couldn't quite hear that. Could you tell me when you'd like to schedule?");
             twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             return twiml;
         }
