@@ -23,7 +23,7 @@ class ConversationContext {
     constructor(appointment) {
         this.appointment = appointment;
         this.userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
-        this.userContact = appointment.userContact || null; // <-- ADDED THIS
+        this.userContact = appointment.userContact || null; 
         this.reason = appointment.reasonForAppointment || 'medical consultation';
         this.extraDetails = appointment.extraDetails || '';
         this.conversationTone = 'friendly_professional';
@@ -69,7 +69,7 @@ class ConversationContext {
     getContextSummary() {
         return {
             userName: this.userName,
-            userContact: this.userContact, // <-- ADDED THIS
+            userContact: this.userContact, 
             reason: this.reason,
             extraDetails: this.extraDetails,
             suggestedTimes: this.suggestedTimes,
@@ -86,20 +86,24 @@ class ConversationContext {
 // Store conversation contexts
 const conversationContexts = new Map();
 
-// *** UPDATED: getSingleAiResponsePrompt ***
-// This prompt is now rewritten for the correct Agent -> Provider -> Client relationship.
+
 const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory, currentState, timeToConfirmISO = null) => {
     const today = new Date();
     const timeZone = 'EAT (UTC+3)';
     const contextData = context.getContextSummary();
     
+    // *** FIX: Format contact number for clear TTS pronunciation ***
+    // This turns "+919..." into "plus 9 1 9..."
+    const formattedUserContact = contextData.userContact 
+        ? contextData.userContact.replace(/\+/g, 'plus ').replace(/(\d)/g, '$1 ').trim() 
+        : 'No contact number on file';
+
     let historyContext = conversationHistory.slice(-7).map(entry => 
         `${entry.speaker}: "${entry.message}"`
     ).join('\n');
 
     let taskInstruction = '';
     
-    // Dynamically change instructions based on the conversation state
     if (currentState === CONVERSATION_STATES.CONFIRMING_TIME) {
         const formattedTime = new Date(timeToConfirmISO).toLocaleString('en-US', { 
             weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true 
@@ -134,7 +138,7 @@ CRITICAL CONTEXT:
 - Timezone: ${timeZone}
     
 - You are scheduling FOR (Client): ${contextData.userName}
-- Client's Contact Number: ${contextData.userContact || 'No contact number on file'}
+- Client's Contact Number: ${formattedUserContact} 
 - Purpose of Appointment: ${contextData.reason}
     
 - Conversation state: ${currentState}
@@ -148,8 +152,9 @@ Based on your analysis, generate a natural, conversational response and determin
     
 *** IMPORTANT RULES ***
 1.  **Handle Contact Info**:
-    - If the user (the provider you are calling) asks for the *client's* contact information (e.g., "What is ${contextData.userName}'s number?"), **you must provide the 'Client's Contact Number'** from the \`CRITICAL_CONTEXT\`. This is necessary for them to schedule the meeting.
-    - Example response: "Sure, his contact number is ${contextData.userContact}."
+    - If the user (the provider you are calling) asks for the *client's* contact information (e.g., "What is ${contextData.userName}'s number?"), **you must provide the 'Client's Contact Number'** from the \`CRITICAL_CONTEXT\`.
+    - When you say the number, say it exactly as written (with spaces) so the Text-to-Speech can read it clearly.
+    - Example response: "Sure, his contact number is ${formattedUserContact}."
     - **Do NOT** provide Aiva Health's contact info, as per instructions.
 2.  **Main Task**:
     - If they gave a specific time, generate a confirmation question (e.g., "Great, just to confirm, that's [parsed time]?").
@@ -162,11 +167,12 @@ Based on your analysis, generate a natural, conversational response and determin
 Return a single, valid JSON object with this *exact* structure. Do NOT add markdown or any text outside the JSON.
 {
   "responseText": "The natural, conversational text to say to the user.",
-  "nextState": "ASKING_TIME | CONFIRMING_TIME | HANDLING_QUESTION | COMPLETED | FAILED | CLARIFYING_TIME",
+  "nextState": "asking_time | confirming_time | handling_question | completed | failed | clarifying_time", 
   "extractedTimeISO": "YYYY-MM-DDTHH:mm:ss+03:00 or null if no specific time was extracted/confirmed",
   "analysisSummary": "A brief, one-sentence summary of the user's intent."
 }
 `;
+// *** END OF FIX ***
 }
 
 // Helper functions for conversation management (Unchanged)
@@ -224,7 +230,8 @@ async function getAppointmentRef(appointmentId) {
             throw new Error(`Could not find appointment ${appointmentId}`);
         }
         return foundDoc.ref;
-    } catch (error) {
+    } catch (error)
+    {
         console.error(`[ERROR] getAppointmentRef: Database error for ${appointmentId}: ${error.message}`);
         throw error;
     }
@@ -331,8 +338,7 @@ function safeJsonParse(jsonString, context = '') {
     }
 }
 
-// *** UPDATED: initiateAppointmentFlow ***
-// This prompt is now clearer, states the AI's name, and uses the "on behalf of" language.
+// initiateAppointmentFlow (Unchanged from last time)
 export async function initiateAppointmentFlow(appointmentId) {
     console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -413,7 +419,7 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
     }
 }
 
-// handleAppointmentResponse (Logic is unchanged, but will now use the new prompt)
+// handleAppointmentResponse (Unchanged from last time, but includes the .toLowerCase() fix)
 export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
     console.log(`[INFO] handleAppointmentResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -447,14 +453,10 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         // Log user response
         await addToConversationHistory(appointmentId, 'user', transcribedText);
 
-        // If we were confirming, but got a non-confirmation response,
-        // we should reset to ASKING_TIME
         if (currentState === CONVERSATION_STATES.CONFIRMING_TIME) {
             currentState = CONVERSATION_STATES.ASKING_TIME;
         }
 
-        // --- NEW SINGLE-CALL AI LOGIC ---
-        // This will now use the *updated* prompt with the correct context
         const aiPrompt = getSingleAiResponsePrompt(
             transcribedText, 
             context,
@@ -469,7 +471,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             console.error(`[ERROR] Gemini single-call failed:`, geminiError.message);
             aiResponseRaw = JSON.stringify({
                 responseText: "I'm sorry, I'm having a little trouble. What time were you thinking?",
-                nextState: CONVERSATION_STATES.CLARIFYING_TIME,
+                nextState: "clarifying_time", // <--Ensure lowercase
                 extractedTimeISO: null,
                 analysisSummary: "Gemini API error"
             });
@@ -478,30 +480,32 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         const aiResult = safeJsonParse(aiResponseRaw, 'handleAppointmentResponse');
         console.log(`[INFO] AI Result for ${appointmentId}:`, aiResult);
 
+        // *** FIX: Normalize the nextState to lowercase to match CONVERSATION_STATES object ***
+        const nextState = (aiResult.nextState || 'clarifying_time').toLowerCase();
+
         // Log AI response and analysis
         await addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
-            nextState: aiResult.nextState
+            nextState: nextState
         });
 
         // Update context based on AI
-        if (aiResult.nextState === CONVERSATION_STATES.ASKING_TIME) {
-            context.addRejectedTime(transcribedText); // Assume previous time was rejected
+        if (nextState === CONVERSATION_STATES.ASKING_TIME) {
+            context.addRejectedTime(transcribedText); 
         }
 
         // --- ACT ON AI RESPONSE ---
         
         // Update state in Firestore
-        await updateConversationState(appointmentId, aiResult.nextState, {
+        await updateConversationState(appointmentId, nextState, { // <-- Use normalized state
             lastAnalysis: aiResult.analysisSummary,
-            suggestedTime: aiResult.extractedTimeISO // will be null if not applicable
+            suggestedTime: aiResult.extractedTimeISO 
         });
 
         // Handle the next step based on the state AI determined
-        switch (aiResult.nextState) {
+        switch (nextState) { // <-- Use normalized state
             
             case CONVERSATION_STATES.CONFIRMING_TIME:
-                // AI extracted a time and wants to confirm it
                 const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(aiResult.extractedTimeISO)}`;
                 
                 const gatherConfirm = twiml.gather({ 
@@ -521,7 +525,6 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 break;
 
             case CONVERSATION_STATES.FAILED:
-                // AI determined the conversation failed
                 twiml.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
                 twiml.hangup();
                 break;
@@ -530,7 +533,6 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             case CONVERSATION_STATES.CLARIFYING_TIME:
             case CONVERSATION_STATES.HANDLING_QUESTION:
             default:
-                // Continue the conversation
                 const gather = twiml.gather({
                     input: 'speech',
                     action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
@@ -551,7 +553,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
     }
 }
 
-// handleConfirmationResponse (Logic is unchanged, but will now use the new prompt)
+// handleConfirmationResponse (Unchanged from last time, but includes the .toLowerCase() fix)
 export async function handleConfirmationResponse(appointmentId, transcribedText, timeToConfirmISO, timedOut) {
     console.log(`[INFO] handleConfirmationResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -581,13 +583,11 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
 
         await addToConversationHistory(appointmentId, 'user', transcribedText, { confirmationResponse: true });
 
-        // --- NEW SINGLE-CALL AI LOGIC ---
-        // This will now use the *updated* prompt with the correct context
         const aiPrompt = getSingleAiResponsePrompt(
             transcribedText, 
             context,
             conversationHistory,
-            CONVERSATION_STATES.CONFIRMING_TIME, // Force the state
+            CONVERSATION_STATES.CONFIRMING_TIME, 
             timeToConfirmISO
         );
 
@@ -598,7 +598,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             console.error(`[ERROR] Gemini confirmation-call failed:`, geminiError.message);
             aiResponseRaw = JSON.stringify({
                 responseText: "I'm sorry, I had a brief issue. Could you confirm that time again?",
-                nextState: CONVERSATION_STATES.CONFIRMING_TIME,
+                nextState: "confirming_time", // <-- Ensure lowercase
                 extractedTimeISO: timeToConfirmISO,
                 analysisSummary: "Gemini API error"
             });
@@ -607,20 +607,23 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         const aiResult = safeJsonParse(aiResponseRaw, 'handleConfirmationResponse');
         console.log(`[INFO] AI Confirmation Result for ${appointmentId}:`, aiResult);
 
+        // *** FIX: Normalize the nextState to lowercase to match CONVERSATION_STATES object ***
+        const nextState = (aiResult.nextState || 'confirming_time').toLowerCase();
+
         // Log AI response
         await addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
-            nextState: aiResult.nextState
+            nextState: nextState
         });
         
         // --- ACT ON AI RESPONSE ---
         
         // Update state in Firestore
-        await updateConversationState(appointmentId, aiResult.nextState, {
+        await updateConversationState(appointmentId, nextState, { // <-- Use normalized state
             lastAnalysis: aiResult.analysisSummary
         });
 
-        switch (aiResult.nextState) {
+        switch (nextState) { // <-- Use normalized state
 
             case CONVERSATION_STATES.COMPLETED:
                 // SUCCESS! AI confirmed the time.
@@ -668,7 +671,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 } else {
                     const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
                     const gatherUnclear = twiml.gather({ input: 'speech', action: confirmationUrl, speechTimeout: 'auto' });
-                    gatherUnclear.say({ voice: 'alice', rate: '9E5%' }, aiResult.responseText); // Use AI's clarification response
+                    gatherUnclear.say({ voice: 'alice', rate: '95%' }, aiResult.responseText); // Use AI's clarification response
                     twiml.redirect({ method: 'POST' }, confirmationUrl + '&timedOut=true');
                 }
                 break;
