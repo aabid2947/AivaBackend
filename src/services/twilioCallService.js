@@ -16,13 +16,14 @@ const CONVERSATION_STATES = {
 
 // Configuration constants
 const MAX_RETRIES = 3;
-// const MAX_CLARIFICATION_ATTEMPTS = 2; // Can be simplified
 
-// Enhanced conversation context tracker
+// *** UPDATED: ConversationContext ***
+// Now includes userContact
 class ConversationContext {
     constructor(appointment) {
         this.appointment = appointment;
         this.userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+        this.userContact = appointment.userContact || null; // <-- ADDED THIS
         this.reason = appointment.reasonForAppointment || 'medical consultation';
         this.extraDetails = appointment.extraDetails || '';
         this.conversationTone = 'friendly_professional';
@@ -68,6 +69,7 @@ class ConversationContext {
     getContextSummary() {
         return {
             userName: this.userName,
+            userContact: this.userContact, // <-- ADDED THIS
             reason: this.reason,
             extraDetails: this.extraDetails,
             suggestedTimes: this.suggestedTimes,
@@ -84,9 +86,8 @@ class ConversationContext {
 // Store conversation contexts
 const conversationContexts = new Map();
 
-// *** NEW: SINGLE, EFFICIENT AI PROMPT ***
-// This prompt replaces both getIntelligentAnalysisPrompt and getAdaptiveResponsePrompt
-// It's faster because it does one job and returns simple JSON.
+// *** UPDATED: getSingleAiResponsePrompt ***
+// This prompt is now rewritten for the correct Agent -> Provider -> Client relationship.
 const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory, currentState, timeToConfirmISO = null) => {
     const today = new Date();
     const timeZone = 'EAT (UTC+3)';
@@ -104,8 +105,8 @@ const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory
             weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: 'numeric', hour12: true 
         });
         taskInstruction = `
-        Task: You just asked the user to confirm an appointment for ${formattedTime}.
-        The user replied: "${transcribedText}"
+        Task: You just asked the provider (the person you are calling) to confirm an appointment for ${formattedTime}.
+        The provider replied: "${transcribedText}"
 
         Analyze their reply and decide the next step:
         1.  **CONFIRMING**: (e.g., "yes", "that works", "perfect").
@@ -114,35 +115,28 @@ const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory
         `;
     } else {
         // Covers ASKING_TIME, HANDLING_QUESTION, CLARIFYING_TIME
-        // *** START OF CHANGES ***
         taskInstruction = `
-        Task: You are in a phone call to schedule an appointment.
-        The user just said: "${transcribedText}"
+        Task: You are in a phone call to schedule an appointment with a provider.
+        The provider just said: "${transcribedText}"
 
         Analyze their reply and decide the next step:
-        1.  **TIME_REFERENCE**: User suggested a time (e.g., "tomorrow at 2", "next Monday morning").
-        2.  **QUESTION_PATIENT_INFO**: User is asking to *confirm* their own info (e.g., "Who is this for?", "What name do you have?").
-        3.  **QUESTION_CLINIC_INFO**: User is asking for *our* info (e.g., "Where are you located?", "What's your callback number?").
-        4.  **QUESTION_GENERAL**: General question (e.g., "how much?", "is there parking?").
-        5.  **SOCIAL/UNCLEAR**: User is making small talk, or the audio is garbled/nonsensical.
+        1.  **TIME_REFERENCE**: Provider suggested a time (e.g., "tomorrow at 2", "next Monday morning").
+        2.  **QUESTION_CLIENT_INFO**: Provider is asking for the *client's* info (e.g., "What's his number?", "What's ${contextData.userName}'s contact?").
+        3.  **QUESTION_GENERAL**: General question (e.g., "how much?", "how long is the session?").
+        4.  **SOCIAL/UNCLEAR**: Provider is making small talk, or the audio is garbled/nonsensical.
         `;
-        // *** END OF CHANGES ***
     }
 
-    // *** START OF CHANGES ***
-    // I have added explicit rules for handling PII and clinic info.
-    return `You are an intelligent AI appointment scheduler named Sarah from Aiva Health. Your goal is to book an appointment while being helpful, understanding, and natural.
+    return `You are an intelligent AI appointment scheduler named Sarah from Aiva Health. Your goal is to book an appointment with the person you are calling (the provider), *on behalf of* a client.
 
 CRITICAL CONTEXT:
 - Today: ${today.toDateString()}
 - Timezone: ${timeZone}
-
-- Your Clinic: Aiva Health
-- Your Clinic Callback Number: "+1-555-123-4567"  // <-- REPLACE THIS
-- Your Clinic Address: "123 Main St, Nairobi, Kenya" // <-- REPLACE THIS
     
-- Scheduling for Patient: ${contextData.userName}
-- Purpose: ${contextData.reason}
+- You are scheduling FOR (Client): ${contextData.userName}
+- Client's Contact Number: ${contextData.userContact || 'No contact number on file'}
+- Purpose of Appointment: ${contextData.reason}
+    
 - Conversation state: ${currentState}
 - Rejected times: ${contextData.rejectedTimes.join(', ') || 'None'}
 - Conversation History:
@@ -151,18 +145,18 @@ ${historyContext}
 ${taskInstruction}
 
 Based on your analysis, generate a natural, conversational response and determine the next logical state.
-
+    
 *** IMPORTANT RULES ***
-1.  **Handle PII Safely but Logically**:
-    - If the user asks for *our* (Aiva Health's) contact info, **you must provide it** from the \`CRITICAL_CONTEXT\` (e.g., "You can reach us at +1-555-123-4567.").
-    - If the user asks who the appointment is for (e.g., "Who are you calling for?", "What name do you have?"), **you must confirm the patient's name** (e.g., "I'm calling to schedule an appointment for ${contextData.userName}, is that correct?"). This is a confirmation, not a data leak.
-    - Do NOT ask the user for sensitive PII you don't already have (e.g., social security number, credit card info).
+1.  **Handle Contact Info**:
+    - If the user (the provider you are calling) asks for the *client's* contact information (e.g., "What is ${contextData.userName}'s number?"), **you must provide the 'Client's Contact Number'** from the \`CRITICAL_CONTEXT\`. This is necessary for them to schedule the meeting.
+    - Example response: "Sure, his contact number is ${contextData.userContact}."
+    - **Do NOT** provide Aiva Health's contact info, as per instructions.
 2.  **Main Task**:
     - If they gave a specific time, generate a confirmation question (e.g., "Great, just to confirm, that's [parsed time]?").
-    - If they confirmed a time, generate a final success message (e.g., "Wonderful! Your appointment is confirmed...").
+    - If they confirmed a time, generate a final success message (e.g., "Wonderful! The appointment is confirmed...").
     - If they declined a time, ask for a new time (e.g., "No problem! What time works better?").
-    - If they asked a question, answer it (using the rules above) and then *gently guide back to scheduling* (e.g., "Great question! Our address is 123 Main St. So, about that appointment, what time works for you?").
-    - If unclear, ask for clarification (e.g., "Sorry, I didn't quite catch that...").
+    - If they asked a question, answer it (using Rule 1 if applicable) and then *gently guide back to scheduling*.
+    - If unclear, ask for clarification.
 3.  **Be Conversational**: Always sound like a warm, real person named Sarah, not a bot.
 
 Return a single, valid JSON object with this *exact* structure. Do NOT add markdown or any text outside the JSON.
@@ -173,7 +167,6 @@ Return a single, valid JSON object with this *exact* structure. Do NOT add markd
   "analysisSummary": "A brief, one-sentence summary of the user's intent."
 }
 `;
-// *** END OF CHANGES ***
 }
 
 // Helper functions for conversation management (Unchanged)
@@ -310,9 +303,9 @@ Make it friendly and reassuring.`;
             console.warn(`FCM token not registered for user ${appointment.userId}. Removing token from user profile.`);
             try {
                 await db.collection('users').doc(appointment.userId).set({ fcmToken: null }, { merge: true });
-                console.log(`Removed invalid FCM token for user ${appointment.userId}`);
+                console.log(`Removed invalid Fcm token for user ${appointment.userId}`);
             } catch (removeError) {
-                console.error(`Failed to remove invalid FCM token for user ${appointment.userId}:`, removeError);
+                console.error(`Failed to remove invalid Fcm token for user ${appointment.userId}:`, removeError);
             }
         }
         
@@ -338,7 +331,8 @@ function safeJsonParse(jsonString, context = '') {
     }
 }
 
-// initiateAppointmentFlow (Unchanged)
+// *** UPDATED: initiateAppointmentFlow ***
+// This prompt is now clearer, states the AI's name, and uses the "on behalf of" language.
 export async function initiateAppointmentFlow(appointmentId) {
     console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -361,27 +355,27 @@ export async function initiateAppointmentFlow(appointmentId) {
         });
 
         // Generate a dynamic, personalized greeting
-        const greetingPrompt = `Generate a warm, natural phone greeting for scheduling an appointment.
+        const greetingPrompt = `You are an AI assistant named Sarah from Aiva Health. Generate a warm, natural phone greeting.
 
 Context:
-- Calling for: ${context.userName}
-- Purpose: ${context.reason}
+- You are calling *on behalf of* a client: ${context.userName}
+- The purpose is: ${context.reason}
 ${context.extraDetails ? `- Additional info: ${context.extraDetails}` : ''}
 
 Create a friendly greeting that:
-1. Sounds like a real person calling (not a bot)
-2. Mentions who you're calling for and why
-3. Asks about availability in a conversational way
-4. Is under 45 words
-5. Uses natural language and contractions
+1. Clearly states your name (Sarah) and that you are calling *on behalf of* ${context.userName}.
+2. Clearly states the reason for the call ("${context.reason}").
+3. Asks about their availability to schedule this.
+4. Is under 45 words and conversational.
 
-Make it sound like you're calling from a friendly medical office, not a call center.`;
+Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${context.userName} to book an appointment for tutoring. Do you have a moment to find a time that works?"`;
 
         let greeting;
         try {
             greeting = await generateGeminiText(greetingPrompt);
         } catch (error) {
-            greeting = `Hi! This is Sarah from Aiva Health. I'm calling to help schedule an appointment for ${context.userName}. This is for ${context.reason}. I was wondering, what time would work best for you?`;
+            // Updated fallback greeting to match the new context
+            greeting = `Hi! This is Sarah from Aiva Health. I'm calling on behalf of ${context.userName} regarding ${context.reason}. I was wondering, what time would work best for you?`;
         }
 
         await addToConversationHistory(appointmentId, 'assistant', greeting);
@@ -419,8 +413,7 @@ Make it sound like you're calling from a friendly medical office, not a call cen
     }
 }
 
-// *** REWRITTEN: handleAppointmentResponse ***
-// This function is now much simpler. It handles all non-confirmation states.
+// handleAppointmentResponse (Logic is unchanged, but will now use the new prompt)
 export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
     console.log(`[INFO] handleAppointmentResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -446,7 +439,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
                 speechTimeout: 'auto'
             });
-            gather.say({ voice: 'alice', rate: '99%' }, "I couldn't quite hear that. Could you tell me when you'd like to schedule?");
+            gather.say({ voice: 'alice', rate: '95%' }, "I couldn't quite hear that. Could you tell me when you'd like to schedule?");
             twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             return twiml;
         }
@@ -461,6 +454,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         }
 
         // --- NEW SINGLE-CALL AI LOGIC ---
+        // This will now use the *updated* prompt with the correct context
         const aiPrompt = getSingleAiResponsePrompt(
             transcribedText, 
             context,
@@ -557,8 +551,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
     }
 }
 
-// *** REWRITTEN: handleConfirmationResponse ***
-// This function is now also much simpler and uses the same single-call logic.
+// handleConfirmationResponse (Logic is unchanged, but will now use the new prompt)
 export async function handleConfirmationResponse(appointmentId, transcribedText, timeToConfirmISO, timedOut) {
     console.log(`[INFO] handleConfirmationResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -589,6 +582,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         await addToConversationHistory(appointmentId, 'user', transcribedText, { confirmationResponse: true });
 
         // --- NEW SINGLE-CALL AI LOGIC ---
+        // This will now use the *updated* prompt with the correct context
         const aiPrompt = getSingleAiResponsePrompt(
             transcribedText, 
             context,
@@ -674,7 +668,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 } else {
                     const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
                     const gatherUnclear = twiml.gather({ input: 'speech', action: confirmationUrl, speechTimeout: 'auto' });
-                    gatherUnclear.say({ voice: 'alice', rate: '95%' }, aiResult.responseText); // Use AI's clarification response
+                    gatherUnclear.say({ voice: 'alice', rate: '9E5%' }, aiResult.responseText); // Use AI's clarification response
                     twiml.redirect({ method: 'POST' }, confirmationUrl + '&timedOut=true');
                 }
                 break;
@@ -688,8 +682,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
     }
 }
 
-// *** NEW: Centralized Error/Timeout Handlers ***
-
+// Centralized Error/Timeout Handlers (Unchanged)
 async function handleTimeout(appointmentId, appointment, twiml, context, timeToConfirmISO = null) {
     let retries;
     let maxRetries;
