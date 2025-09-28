@@ -17,8 +17,7 @@ const CONVERSATION_STATES = {
 // Configuration constants
 const MAX_RETRIES = 3;
 
-// *** UPDATED: ConversationContext ***
-// Now includes userContact
+// Enhanced conversation context tracker
 class ConversationContext {
     constructor(appointment) {
         this.appointment = appointment;
@@ -172,7 +171,6 @@ Return a single, valid JSON object with this *exact* structure. Do NOT add markd
   "analysisSummary": "A brief, one-sentence summary of the user's intent."
 }
 `;
-// *** END OF FIX ***
 }
 
 // Helper functions for conversation management (Unchanged)
@@ -237,8 +235,9 @@ async function getAppointmentRef(appointmentId) {
     }
 }
 
-// Notification function (Unchanged)
-async function sendAppointmentBookingNotification(appointment, confirmedTime) {
+// *** This is the function you are asking for ***
+// It sends the confirmation push notification, just like your reminderService.
+async function sendAppointmentBookingNotification(appointment, confirmedTime, appointmentId) { // *** FIX: Added appointmentId ***
     try {
         if (!appointment.userId) {
             console.warn(`[WARNING] Cannot send notification: appointment missing userId`);
@@ -275,14 +274,14 @@ Make it friendly and reassuring.`;
             notificationBody = await generateGeminiText(prompt);
         } catch (geminiError) {
             console.warn(`[WARNING] Gemini failed for notification message: ${geminiError.message}`);
-            notificationBody = `Your appointment is confirmed for ${new Date(confirmedTime).toLocaleString('en-US', { 
+            notificationBody = `Your appointment for ${cleanUserName} is confirmed for ${new Date(confirmedTime).toLocaleString('en-US', { 
                 weekday: 'long', 
                 month: 'short',
                 day: 'numeric',
                 hour: 'numeric', 
                 minute: 'numeric', 
                 hour12: true 
-            })}. We look forward to seeing you!`;
+            })}.`;
         }
 
         const message = {
@@ -292,7 +291,7 @@ Make it friendly and reassuring.`;
             },
             token: fcmToken,
             data: {
-                appointmentId: appointment.id || '',
+                appointmentId: appointmentId || '', // *** FIX: Use passed-in appointmentId ***
                 userId: appointment.userId || '',
                 type: 'appointment_confirmed',
                 confirmedTime: confirmedTime
@@ -306,6 +305,7 @@ Make it friendly and reassuring.`;
     } catch (error) {
         console.error(`[ERROR] Failed to send appointment booking notification:`, error);
         
+        // This error handling is copied from your reminderService
         if (error.code === 'messaging/registration-token-not-registered') {
             console.warn(`FCM token not registered for user ${appointment.userId}. Removing token from user profile.`);
             try {
@@ -419,7 +419,7 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
     }
 }
 
-// handleAppointmentResponse (Unchanged from last time, but includes the .toLowerCase() fix)
+// handleAppointmentResponse (Unchanged from last time)
 export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
     console.log(`[INFO] handleAppointmentResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -525,7 +525,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 break;
 
             case CONVERSATION_STATES.FAILED:
-                twiml.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                twiml.say({ voice: 'alice', rate: '9Z5%' }, aiResult.responseText);
                 twiml.hangup();
                 break;
 
@@ -553,7 +553,8 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
     }
 }
 
-// handleConfirmationResponse (Unchanged from last time, but includes the .toLowerCase() fix)
+// *** UPDATED: handleConfirmationResponse ***
+// This function now passes the appointmentId to the notification service
 export async function handleConfirmationResponse(appointmentId, transcribedText, timeToConfirmISO, timedOut) {
     console.log(`[INFO] handleConfirmationResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -635,8 +636,8 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                     confirmedAt: new Date().toISOString()
                 });
                 
-                // Send notification
-                await sendAppointmentBookingNotification(appointment, timeToConfirmISO);
+                // *** FIX: Pass the appointmentId to the notification function ***
+                await sendAppointmentBookingNotification(appointment, timeToConfirmISO, appointmentId);
                 break;
             
             case CONVERSATION_STATES.ASKING_TIME:

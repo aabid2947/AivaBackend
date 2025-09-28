@@ -161,11 +161,12 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
           await updateConversationState(userId, chatId, nextState, { reminderDetails: { task_description: null, reminder_iso_string_with_offset: null } });
         }
       } else if (intent === IntentCategories.APPOINTMENT_CALL) {
-        if (details.userName && details.bookingContactNumber && details.reasonForAppointment && details.reminder_iso_string_with_offset) {
-          const callDateTime = new Date(details.reminder_iso_string_with_offset);
+        // *** FIX: Use 'callTime' instead of 'reminder_iso_string_with_offset' ***
+        if (details.userName && details.bookingContactNumber && details.reasonForAppointment && details.callTime) {
+          const callDateTime = new Date(details.callTime);
           if (isNaN(callDateTime.getTime())) {
             aivaResponseContent = "I can help book that appointment, but I had trouble with the date and time provided. When should I make the call?";
-            details.reminder_iso_string_with_offset = null;
+            details.callTime = null; // *** FIX ***
             nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
             await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
           } else {
@@ -174,7 +175,8 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             await updateConversationState(userId, chatId, nextState, { appointmentDetails: details });
           }
         } else if (details && Object.values(details).some(v => v !== null)) {
-          const appointmentFields = ['userName', 'bookingContactNumber', 'reasonForAppointment', 'reminder_iso_string_with_offset'];
+           // *** FIX: Use 'callTime' in the fields list ***
+          const appointmentFields = ['userName', 'bookingContactNumber', 'reasonForAppointment', 'callTime'];
           const missingApptDetails = appointmentFields.filter(key => !details[key]);
           let followupQuestion = "Okay, I can help book that appointment. ";
           if (missingApptDetails.includes('userName')) {
@@ -183,7 +185,7 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
             followupQuestion += "What's the phone number I should call to book the appointment?";
           } else if (missingApptDetails.includes('reasonForAppointment')) {
             followupQuestion += "What is the reason for this appointment?";
-          } else if (missingApptDetails.includes('reminder_iso_string_with_offset')) {
+          } else if (missingApptDetails.includes('callTime')) { // *** FIX ***
             followupQuestion += "And when would be a good time for me to make this call?";
           }
           aivaResponseContent = followupQuestion.trim();
@@ -224,7 +226,8 @@ export async function handleUserMessage(userId, chatId, userMessageContent) {
         } else if (confirmedIntent === IntentCategories.APPOINTMENT_CALL) {
           aivaResponseContent = "Okay, I can help with that. To book the appointment, I'll need a few details. What is the full name and contact info (phone/email) of the person the appointment is for?";
           nextState = ConversationStates.PROCESSING_APPOINTMENT_DETAILS;
-          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, reminder_iso_string_with_offset: null, extraDetails: null } });
+           // *** FIX: Use 'callTime' in the initial object ***
+          await updateConversationState(userId, chatId, nextState, { appointmentDetails: { userName: null, userContact: null, bookingContactNumber: null, reasonForAppointment: null, callTime: null, extraDetails: null } });
 
         } else if (confirmedIntent === IntentCategories.SUMMARIZE_CONTENT) {
           aivaResponseContent = "Excellent. Please provide the text or upload the file you want me to summarize.";
