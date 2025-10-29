@@ -2,6 +2,7 @@
 import twilio from 'twilio';
 import { db, admin } from '../config/firebaseAdmin.js';
 import { generateGeminiText } from '../utils/geminiClient.js';
+import { generateSpeech, VOICE_IDS } from '../utils/elevenLabsClient.js';
 
 // Conversation states to track the flow
 const CONVERSATION_STATES = {
@@ -85,6 +86,33 @@ class ConversationContext {
 // Store conversation contexts
 const conversationContexts = new Map();
 
+// Store audio buffers temporarily
+const audioBuffers = new Map();
+
+/**
+ * Helper function to generate speech using ElevenLabs and prepare it for Twilio
+ * @param {string} text - Text to convert to speech
+ * @param {string} appointmentId - Appointment ID for caching
+ * @returns {Promise<string>} - URL or reference to audio that can be played by Twilio
+ */
+async function generateAndCacheSpeech(text, appointmentId) {
+    try {
+        console.log(`[INFO] Generating ElevenLabs speech for appointment ${appointmentId}`);
+        const audioBuffer = await generateSpeech(text, VOICE_IDS.SARAH);
+        
+        // Store the audio buffer temporarily (you might want to upload to cloud storage for production)
+        const audioKey = `${appointmentId}_${Date.now()}`;
+        audioBuffers.set(audioKey, audioBuffer);
+        
+        // In production, upload to S3/Cloud Storage and return public URL
+        // For now, we'll use TTS through Twilio as fallback
+        console.log(`[INFO] Audio generated and cached with key: ${audioKey}`);
+        return null; // Will use Twilio Say as fallback
+    } catch (error) {
+        console.error(`[ERROR] Failed to generate ElevenLabs speech:`, error.message);
+        return null; // Will use Twilio Say as fallback
+    }
+}
 
 const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory, currentState, timeToConfirmISO = null) => {
     const today = new Date();
@@ -387,6 +415,9 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
         await addToConversationHistory(appointmentId, 'assistant', greeting);
         await updateConversationState(appointmentId, CONVERSATION_STATES.ASKING_TIME);
 
+        // Try to generate ElevenLabs audio for better quality
+        const audioUrl = await generateAndCacheSpeech(greeting, appointmentId);
+        
         const gather = twiml.gather({
             input: 'speech',
             action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
@@ -398,7 +429,12 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
             hints: 'tomorrow, next week, Monday, Tuesday, Wednesday, Thursday, Friday, morning, afternoon, evening'
         });
         
-        gather.say({ voice: 'alice', rate: '95%' }, greeting);
+        // Use ElevenLabs audio if available, otherwise use Twilio TTS
+        if (audioUrl) {
+            gather.play(audioUrl);
+        } else {
+            gather.say({ voice: 'Polly.Joanna', rate: '95%' }, greeting);
+        }
 
         twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
         
@@ -413,7 +449,13 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
             console.error(`[ERROR] Could not log initialization failure: ${logError.message}`);
         }
         
-        twiml.say({ voice: 'alice', rate: '95%' }, "Oh, I'm having a technical issue on my end. Someone from our team will call you back shortly. Sorry about that!");
+        const initErrorMessage = "Oh, I'm having a technical issue on my end. Someone from our team will call you back shortly. Sorry about that!";
+        const audioInitError = await generateAndCacheSpeech(initErrorMessage, appointmentId);
+        if (audioInitError) {
+            twiml.play(audioInitError);
+        } else {
+            twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, initErrorMessage);
+        }
         twiml.hangup();
         return twiml;
     }
@@ -440,12 +482,22 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         // Validate transcription
         if (!transcribedText || transcribedText.trim().length === 0) {
             await addToConversationHistory(appointmentId, 'user', '[no audio detected]', { silent: true });
+            const clarificationMessage = "I couldn't quite hear that. Could you tell me when you'd like to schedule?";
+            const audioUrl = await generateAndCacheSpeech(clarificationMessage, appointmentId);
+            
             const gather = twiml.gather({
                 input: 'speech',
                 action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
-                speechTimeout: 'auto'
+                speechTimeout: 'auto',
+                speechModel: 'experimental_conversations'
             });
-            gather.say({ voice: 'alice', rate: '95%' }, "I couldn't quite hear that. Could you tell me when you'd like to schedule?");
+            
+            if (audioUrl) {
+                gather.play(audioUrl);
+            } else {
+                gather.say({ voice: 'Polly.Joanna', rate: '95%' }, clarificationMessage);
+            }
+            
             twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
             return twiml;
         }
@@ -507,6 +559,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             
             case CONVERSATION_STATES.CONFIRMING_TIME:
                 const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(aiResult.extractedTimeISO)}`;
+                const audioConfirm = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 
                 const gatherConfirm = twiml.gather({ 
                     input: 'speech', 
@@ -514,18 +567,34 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                     speechTimeout: 'auto',
                     speechModel: 'experimental_conversations'
                 });
-                gatherConfirm.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                
+                if (audioConfirm) {
+                    gatherConfirm.play(audioConfirm);
+                } else {
+                    gatherConfirm.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
+                
                 twiml.redirect({ method: 'POST' }, confirmationUrl + '&timedOut=true');
                 break;
 
             case CONVERSATION_STATES.COMPLETED:
                 // This state should be handled by handleConfirmationResponse, but as a fallback:
-                twiml.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                const audioCompleted = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
+                if (audioCompleted) {
+                    twiml.play(audioCompleted);
+                } else {
+                    twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
                 twiml.hangup();
                 break;
 
             case CONVERSATION_STATES.FAILED:
-                twiml.say({ voice: 'alice', rate: '9Z5%' }, aiResult.responseText);
+                const audioFailed = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
+                if (audioFailed) {
+                    twiml.play(audioFailed);
+                } else {
+                    twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
                 twiml.hangup();
                 break;
 
@@ -533,13 +602,20 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             case CONVERSATION_STATES.CLARIFYING_TIME:
             case CONVERSATION_STATES.HANDLING_QUESTION:
             default:
+                const audioContinue = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 const gather = twiml.gather({
                     input: 'speech',
                     action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`,
                     speechTimeout: 'auto',
                     speechModel: 'experimental_conversations'
                 });
-                gather.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                
+                if (audioContinue) {
+                    gather.play(audioContinue);
+                } else {
+                    gather.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
+                
                 twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
                 break;
         }
@@ -574,10 +650,16 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             await addToConversationHistory(appointmentId, 'user', '[no audio in confirmation]', { silent: true });
             const formattedTime = new Date(timeToConfirmISO).toLocaleString('en-US', { timeStyle: 'short', dateStyle: 'medium' });
             const clarifyMessage = `I didn't catch that. For ${formattedTime}, is that a yes?`;
+            const audioClarify = await generateAndCacheSpeech(clarifyMessage, appointmentId);
             const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
             
             const gatherClarify = twiml.gather({ input: 'speech', action: confirmationUrl, speechTimeout: 'auto' });
-            gatherClarify.say({ voice: 'alice', rate: '95%' }, clarifyMessage);
+            if (audioClarify) {
+                gatherClarify.play(audioClarify);
+            } else {
+                gatherClarify.say({ voice: 'Polly.Joanna', rate: '95%' }, clarifyMessage);
+            }
+            
             twiml.redirect({ method: 'POST' }, confirmationUrl + '&timedOut=true');
             return twiml;
         }
@@ -628,7 +710,12 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
 
             case CONVERSATION_STATES.COMPLETED:
                 // SUCCESS! AI confirmed the time.
-                twiml.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                const audioSuccess = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
+                if (audioSuccess) {
+                    twiml.play(audioSuccess);
+                } else {
+                    twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
                 twiml.hangup();
                 
                 await updateConversationState(appointmentId, CONVERSATION_STATES.COMPLETED, {
@@ -645,13 +732,20 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             case CONVERSATION_STATES.CLARIFYING_TIME:
                 // AI detected a "no" or a new question. Send them back to the main loop.
                 context.addRejectedTime(new Date(timeToConfirmISO).toLocaleString());
+                const audioRetry = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 
                 const gatherRetry = twiml.gather({ 
                     input: 'speech', 
                     action: `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`, 
                     speechTimeout: 'auto'
                 });
-                gatherRetry.say({ voice: 'alice', rate: '95%' }, aiResult.responseText);
+                
+                if (audioRetry) {
+                    gatherRetry.play(audioRetry);
+                } else {
+                    gatherRetry.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                }
+                
                 twiml.redirect({ method: 'POST' }, `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}&timedOut=true`);
                 break;
                 
@@ -663,7 +757,12 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
 
                 if (clarificationAttempts >= 2) {
                     const escalateMessage = "I'm having trouble understanding. Let me have someone call you back to finalize this. Thanks!";
-                    twiml.say({ voice: 'alice', rate: '95%' }, escalateMessage);
+                    const audioEscalate = await generateAndCacheSpeech(escalateMessage, appointmentId);
+                    if (audioEscalate) {
+                        twiml.play(audioEscalate);
+                    } else {
+                        twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, escalateMessage);
+                    }
                     twiml.hangup();
                     await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
                         failureReason: 'Unable to get clear confirmation',
@@ -671,8 +770,13 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                     });
                 } else {
                     const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
+                    const audioUnclear = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                     const gatherUnclear = twiml.gather({ input: 'speech', action: confirmationUrl, speechTimeout: 'auto' });
-                    gatherUnclear.say({ voice: 'alice', rate: '95%' }, aiResult.responseText); // Use AI's clarification response
+                    if (audioUnclear) {
+                        gatherUnclear.play(audioUnclear);
+                    } else {
+                        gatherUnclear.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
+                    }
                     twiml.redirect({ method: 'POST' }, confirmationUrl + '&timedOut=true');
                 }
                 break;
@@ -711,7 +815,12 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
 
     if (retries >= maxRetries) {
         const failMessage = "I'm having trouble hearing you. Let me have someone call you back to help with this. Have a great day!";
-        twiml.say({ voice: 'alice', rate: '95%' }, failMessage);
+        const audioFail = await generateAndCacheSpeech(failMessage, appointmentId);
+        if (audioFail) {
+            twiml.play(audioFail);
+        } else {
+            twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, failMessage);
+        }
         twiml.hangup();
         await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
             failureReason: `Multiple timeouts (${context})`,
@@ -719,12 +828,17 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
         });
     } else {
         await getAppointmentRef(appointmentId).then(ref => ref.update({ [stateToUpdate]: retries }));
+        const audioRetry = await generateAndCacheSpeech(retryMessage, appointmentId);
         const gather = twiml.gather({
             input: 'speech',
             action: gatherActionUrl,
             speechTimeout: 'auto'
         });
-        gather.say({ voice: 'alice', rate: '95%' }, retryMessage);
+        if (audioRetry) {
+            gather.play(audioRetry);
+        } else {
+            gather.say({ voice: 'Polly.Joanna', rate: '95%' }, retryMessage);
+        }
         twiml.redirect({ method: 'POST' }, gatherActionUrl + '&timedOut=true');
     }
     return twiml;
@@ -736,7 +850,13 @@ async function handleCriticalError(appointmentId, error, twiml) {
     } catch (logError) {
         console.error(`[ERROR] Could not log critical error: ${logError.message}`);
     }
-    twiml.say({ voice: 'alice', rate: '95%' }, "I'm so sorry, I'm having technical difficulties. Someone from our team will call you back very soon. Thank you for your patience!");
+    const errorMessage = "I'm so sorry, I'm having technical difficulties. Someone from our team will call you back very soon. Thank you for your patience!";
+    const audioError = await generateAndCacheSpeech(errorMessage, appointmentId);
+    if (audioError) {
+        twiml.play(audioError);
+    } else {
+        twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, errorMessage);
+    }
     twiml.hangup();
 }
 
