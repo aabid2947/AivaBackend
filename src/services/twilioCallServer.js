@@ -6,6 +6,9 @@ import { PassThrough } from 'stream';
 import { generateGeminiText, generateGeminiTextStream } from '../utils/geminiClient.js';
 import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
 import { db, admin } from '../config/firebaseAdmin.js';
+import ffmpegStatic from 'ffmpeg-static';
+
+ffmpeg.setFfmpegPath(ffmpegStatic);
 
 const speechClient = new SpeechClient();
 
