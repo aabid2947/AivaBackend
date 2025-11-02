@@ -1,6 +1,5 @@
 // src/services/streamingCallServer.js
 import { WebSocketServer } from 'ws';
-import { SpeechClient } from '@google-cloud/speech';
 import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
 import { generateChatgptText, generateChatgptTextStream } from '../utils/chatgptClient.js';
@@ -13,10 +12,10 @@ ffmpeg.setFfmpegPath(ffmpegStatic);
 // Workaround STT: do not use Google Speech client here.
 // Instead we buffer incoming μ-law audio and transcribe using OpenAI Whisper
 // when available, or save audio for offline processing.
-const { spawn } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
+import { spawn } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 async function mulawBufferToWavBuffer(mulawBuffer) {
     return new Promise((resolve, reject) => {
@@ -29,90 +28,39 @@ async function mulawBufferToWavBuffer(mulawBuffer) {
                 '-ar', '16000',
                 '-ac', '1',
                 '-f', 'wav',
-            // Simple buffer-based STT stream fallback.
-            // We collect incoming μ-law audio chunks and, after a short silence (inactivity),
-            // convert the buffer to WAV and call OpenAI Whisper (if available). If OpenAI
-            // is not available, we save the raw buffer to disk for offline processing.
+                'pipe:1'
+            ]);
 
-            let sttBuffer = [];
-            let inactivityTimer = null;
-            const SILENCE_MS = 700; // treat this silence as end-of-utterance
+            const outBuffers = [];
+            const errBuffers = [];
 
-            const processBuffer = async () => {
-                if (!sttBuffer || sttBuffer.length === 0) return;
-                const mulawBuffer = Buffer.concat(sttBuffer);
-                sttBuffer = [];
+            ff.stdout.on('data', (d) => outBuffers.push(d));
+            ff.stderr.on('data', (d) => errBuffers.push(d));
 
-                // Temporarily stop listening while we process
-                isListening = false;
+            ff.on('error', (err) => reject(err));
 
-                try {
-                    // Convert mulaw to wav buffer
-                    const wavBuffer = await mulawBufferToWavBuffer(mulawBuffer);
-
-                    // Try OpenAI Whisper transcription
-                    const transcript = await transcribeWithOpenAI(wavBuffer);
-
-                    if (transcript) {
-                        // Add to conversation and trigger AI response pipeline
-                        await addToConversationHistory(appointmentId, 'user', transcript).catch(() => {});
-                        cancelActiveStreams();
-
-                        // Build prompt and stream AI -> TTS -> Twilio
-                        try {
-                            const appointmentRef = await getAppointmentRef(appointmentId);
-                            const appointment = (await appointmentRef.get()).data();
-                            // Use existing pipeline: create prompt then stream
-                            const contextPrompt = transcript; // passthrough
-                            // call streamGeminiToTwilio directly with prompt text
-                            streamGeminiToTwilio(contextPrompt).catch(() => {});
-                        } catch (err) {
-                            // swallow errors - continue conversation
-                        }
-                    } else {
-                        // If transcription not available, save raw audio for offline processing
-                        await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
-                    }
-                } catch (err) {
-                    // On any error, save raw buffer for offline processing
-                    await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
-                } finally {
-                    // Re-enable listening after a short delay to avoid immediate re-trigger
-                    setTimeout(() => { isListening = true; }, 250);
+            ff.on('close', (code) => {
+                if (code !== 0) {
+                    const stderr = Buffer.concat(errBuffers).toString('utf8');
+                    return reject(new Error('ffmpeg exited with code ' + code + ': ' + stderr));
                 }
-            };
+                resolve(Buffer.concat(outBuffers));
+            });
 
-            const sttStreamShim = {
-                write: (chunk) => {
-                    try {
-                        // Twilio media payloads are base64-encoded μ-law frames
-                        const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'base64');
-                        sttBuffer.push(raw);
+            ff.stdin.write(mulawBuffer);
+            ff.stdin.end();
+        } catch (err) {
+            reject(err);
+        }
+    });
+}
 
-                        if (inactivityTimer) clearTimeout(inactivityTimer);
-                        inactivityTimer = setTimeout(() => {
-                            processBuffer().catch(() => {});
-                        }, SILENCE_MS);
-                    } catch (e) {
-                        // ignore
-                    }
-                },
-                destroy: () => {
-                    if (inactivityTimer) clearTimeout(inactivityTimer);
-                    sttBuffer = [];
-                }
-            };
-
-            sttStream = sttStreamShim;
-            return sttStream;
+async function transcribeWithOpenAI(wavBuffer) {
     const OPENAI_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_KEY) return null;
 
-    // Use node-fetch or global fetch (Node 18+)
     const formData = new (global.FormData || require('form-data'))();
-    // Try to append as Blob if available, otherwise as Buffer
     try {
-        // For environments with global FormData + Blob
         if (typeof Blob !== 'undefined') {
             const blob = new Blob([wavBuffer], { type: 'audio/wav' });
             formData.append('file', blob, 'audio.wav');
@@ -120,7 +68,6 @@ async function mulawBufferToWavBuffer(mulawBuffer) {
             formData.append('file', wavBuffer, { filename: 'audio.wav', contentType: 'audio/wav' });
         }
     } catch (e) {
-        // Fallback for "form-data" package
         formData.append('file', wavBuffer, 'audio.wav');
     }
 
@@ -129,7 +76,6 @@ async function mulawBufferToWavBuffer(mulawBuffer) {
     const fetchImpl = global.fetch || require('node-fetch');
     const headers = { 'Authorization': `Bearer ${OPENAI_KEY}` };
 
-    // If using form-data package, let it set headers
     if (formData.getHeaders && typeof formData.getHeaders === 'function') {
         Object.assign(headers, formData.getHeaders());
     }
@@ -337,86 +283,92 @@ export function setupWebSocketServer(server) {
         let isListening = false;
 
         function initializeSttStream() {
-            const request = {
-                config: {
-                    encoding: 'MULAW',
-                    sampleRateHertz: 8000,
-                    languageCode: 'en-US',
-                    enableAutomaticPunctuation: true,
-                },
-                interimResults: false,
-            };
+            // Buffer-based STT workaround (no Google Speech)
+            let sttBuffer = [];
+            let inactivityTimer = null;
+            const SILENCE_MS = 700;
 
-            sttStream = speechClient
-                .streamingRecognize(request)
-                .on('error', (error) => {
-                    console.error('[ERROR] STT stream error:', error);
-                    sttStream = null;
-                })
-                .on('data', (data) => {
-                    if (data.results[0] && data.results[0].isFinal) {
-                        const transcript = data.results[0].alternatives[0].transcript;
+            const processBuffer = async () => {
+                if (!sttBuffer || sttBuffer.length === 0) return;
+                const mulawBuffer = Buffer.concat(sttBuffer);
+                sttBuffer = [];
+
+                isListening = false;
+
+                try {
+                    const wavBuffer = await mulawBufferToWavBuffer(mulawBuffer);
+                    const transcript = await transcribeWithOpenAI(wavBuffer);
+
+                    if (transcript) {
                         console.log(`[STT] User said: "${transcript}"`);
-
-                        // Log user input to conversation history
-                        addToConversationHistory(appointmentId, 'user', transcript).catch(console.error);
-
-                        // Stop listening while AI responds
-                        isListening = false;
-
-                        // ✅ FIX: Call the new, fast streaming pipeline directly
-
-                        // 1. Cancel any audio that's already playing (for interruption)
+                        await addToConversationHistory(appointmentId, 'user', transcript).catch(() => {});
                         cancelActiveStreams();
 
-                        // 2. Create the prompt with appointment context
-                        (async () => {
-                            try {
-                                const appointmentRef = await getAppointmentRef(appointmentId);
-                                const appointment = (await appointmentRef.get()).data();
+                        try {
+                            const appointmentRef = await getAppointmentRef(appointmentId);
+                            const appointment = (await appointmentRef.get()).data();
 
-                                const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
-                                const reason = appointment.reasonForAppointment || 'medical consultation';
-                                const userContact = appointment.userContact || 'No contact number on file';
+                            const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+                            const reason = appointment.reasonForAppointment || 'medical consultation';
+                            const userContact = appointment.userContact || 'No contact number on file';
 
-                                const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
-                                
-                                CONTEXT:
-                                - You are calling on behalf of: ${userName}
-                                - For: ${reason}
-                                - Client's contact: ${userContact}
-                                - User just said: "${transcript}"
-                                
-                                Respond naturally and professionally. Keep it brief (under 50 words).
-                                If they suggest a time, confirm it.
-                                If they ask for the client's contact info, provide: ${userContact}
-                                If they ask questions, answer helpfully.
-                                If unclear, ask for clarification.`;
+                            const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
+                            
+                            CONTEXT:
+                            - You are calling on behalf of: ${userName}
+                            - For: ${reason}
+                            - Client's contact: ${userContact}
+                            - User just said: "${transcript}"
+                            
+                            Respond naturally and professionally. Keep it brief (under 50 words).
+                            If they suggest a time, confirm it.
+                            If they ask for the client's contact info, provide: ${userContact}
+                            If they ask questions, answer helpfully.
+                            If unclear, ask for clarification.`;
 
-                                // 3. Call the streaming pipeline. 
-                                streamGeminiToTwilio(prompt).catch(err => {
-                                    console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
-                                });
-                            } catch (error) {
-                                console.error('[ERROR] Failed to get appointment context:', error);
+                            streamGeminiToTwilio(prompt).catch(() => {});
+                        } catch (error) {
+                            const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
+                            User just said: "${transcript}"
+                            
+                            Respond naturally and professionally. Keep it brief (under 50 words).
+                            If they suggest a time, confirm it.
+                            If they ask questions, answer helpfully.
+                            If unclear, ask for clarification.`;
 
-                                // Fallback prompt
-                                const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
-                                User just said: "${transcript}"
-                                
-                                Respond naturally and professionally. Keep it brief (under 50 words).
-                                If they suggest a time, confirm it.
-                                If they ask questions, answer helpfully.
-                                If unclear, ask for clarification.`;
-
-                                streamGeminiToTwilio(prompt).catch(err => {
-                                    console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
-                                });
-                            }
-                        })();
+                            streamGeminiToTwilio(prompt).catch(() => {});
+                        }
+                    } else {
+                        await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
                     }
-                });
+                } catch (err) {
+                    await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
+                } finally {
+                    setTimeout(() => { isListening = true; }, 250);
+                }
+            };
 
+            const sttStreamShim = {
+                write: (chunk) => {
+                    try {
+                        const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'base64');
+                        sttBuffer.push(raw);
+
+                        if (inactivityTimer) clearTimeout(inactivityTimer);
+                        inactivityTimer = setTimeout(() => {
+                            processBuffer().catch(() => {});
+                        }, SILENCE_MS);
+                    } catch (e) {
+                        // ignore
+                    }
+                },
+                destroy: () => {
+                    if (inactivityTimer) clearTimeout(inactivityTimer);
+                    sttBuffer = [];
+                }
+            };
+
+            sttStream = sttStreamShim;
             return sttStream;
         }
 
