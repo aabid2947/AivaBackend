@@ -103,5 +103,5 @@ server.listen(PORT, () => { // 7. Change 'app.listen' to 'server.listen'
 console.log(`AIVA API Server running on port ${PORT}`);
 console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 console.log(`WebSocket server initialized.`);
-import appointmentRoutes from './src/routes/appointmentRoutes.js'
+import('./src/cron/appointmentScheduler.js');
 });
