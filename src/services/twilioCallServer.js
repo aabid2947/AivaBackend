@@ -526,8 +526,21 @@ export function setupWebSocketServer(server) {
                             }
                             
                             // ✅ CRITICAL: Start listening for user response AFTER audio finishes
-                            console.log(`[STT] Audio playback complete. Starting to listen for user response...`);
+                            console.log(`[STT] ========================================`);
+                            console.log(`[STT] ✅ Audio playback complete!`);
+                            console.log(`[STT] Setting isListening = true`);
                             isListening = true;
+                            console.log(`[STT] isListening is now: ${isListening}`);
+                            
+                            // Ensure STT stream is ready
+                            if (!sttStream || sttStream.destroyed) {
+                                console.log('[STT] ⚠️ STT stream not available. Reinitializing...');
+                                initializeSttStream();
+                            } else {
+                                console.log('[STT] ✅ STT stream is ready to receive audio');
+                            }
+                            console.log(`[STT] 🎤 NOW LISTENING FOR USER INPUT`);
+                            console.log(`[STT] ========================================`);
                         }
                     }, 100); // Check every 100ms
                 });
@@ -638,6 +651,10 @@ export function setupWebSocketServer(server) {
                     if (isListening && sttStream) {
                         const audioChunk = Buffer.from(msg.media.payload, 'base64');
                         try {
+                            // Log first few audio packets
+                            if (Math.random() < 0.05) { // 5% sampling to see it's working
+                                console.log(`[STT] 🎤 Processing audio: ${audioChunk.length} bytes (isListening=${isListening})`);
+                            }
                             sttStream.write(audioChunk);
                         } catch (error) {
                             console.error('[ERROR] Failed to write to STT stream:', error);
