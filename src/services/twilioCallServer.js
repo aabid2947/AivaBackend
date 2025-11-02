@@ -57,7 +57,7 @@ async function mulawBufferToWavBuffer(mulawBuffer) {
 }
 
 async function transcribeWithOpenAI(wavBuffer) {
-    const OPENAI_KEY = process.env.OPENAI_API_KEY;
+    const OPENAI_KEY = process.env.CHATGPT_API_KEY;
     if (!OPENAI_KEY) {
         console.log('[STT] ⚠️ OPENAI_API_KEY not set - transcription unavailable');
         return null;
