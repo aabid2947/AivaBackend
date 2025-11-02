@@ -65,23 +65,60 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
  */
 /**
  * Convert MP3 audio stream to mulaw format for Twilio
- * @param {Stream} inputStream - MP3 audio stream from ElevenLabs
+ * @param {Stream} inputStream - MP3 audio stream from ElevenLabs (async iterator)
  * @returns {Stream} - mulaw audio stream
  */
 async function transcodeMp3ToMulaw(inputStream) {
     const outputStream = new PassThrough();
+    const mp3Stream = new PassThrough();
     
     console.log('[TRANSCODE] Starting MP3 to mulaw conversion...');
     console.log('[TRANSCODE] Input stream type:', inputStream.constructor.name);
     
-    // 🛠️ FIX: Feed the stream directly to FFmpeg
-    // No intermediate PassThrough or async iterator conversion
-    // This prevents the race condition where FFmpeg starts before audio arrives
+    // 🛠️ FIX: Convert async iterator to Node.js stream synchronously
+    // Start the conversion immediately so FFmpeg gets data as it arrives
+    if (inputStream[Symbol.asyncIterator]) {
+        console.log('[TRANSCODE] Converting async iterator to Node.js stream...');
+        
+        // Start reading immediately and write to mp3Stream as data arrives
+        (async () => {
+            try {
+                let chunkCount = 0;
+                let bytesReceived = 0;
+                
+                for await (const chunk of inputStream) {
+                    chunkCount++;
+                    bytesReceived += chunk.length;
+                    
+                    if (chunkCount <= 5 || chunkCount % 20 === 0) {
+                        console.log(`[TRANSCODE] Input chunk ${chunkCount}: ${chunk.length} bytes (total: ${bytesReceived} bytes)`);
+                    }
+                    
+                    // Write chunk to the stream that FFmpeg is reading from
+                    if (!mp3Stream.write(chunk)) {
+                        // If the stream's buffer is full, wait for it to drain
+                        await new Promise(resolve => mp3Stream.once('drain', resolve));
+                    }
+                }
+                
+                console.log(`[TRANSCODE] Input complete. Total: ${chunkCount} chunks, ${bytesReceived} bytes`);
+                mp3Stream.end();
+            } catch (error) {
+                console.error('[ERROR] Failed to read input stream:', error.message);
+                mp3Stream.destroy(error);
+            }
+        })();
+    } else if (inputStream.pipe) {
+        console.log('[TRANSCODE] Input is already a Node.js stream, piping directly...');
+        inputStream.pipe(mp3Stream);
+    } else {
+        throw new Error('Input stream is neither an async iterator nor a Node.js stream');
+    }
     
     let bytesOutput = 0;
     
     const ffmpegProcess = ffmpeg()
-        .input(inputStream) // ✅ Read directly from the ElevenLabs stream
+        .input(mp3Stream) // ✅ Read from the Node.js stream
         .inputFormat('mp3')
         .audioCodec('pcm_mulaw')
         .audioFrequency(8000)
@@ -105,7 +142,10 @@ async function transcodeMp3ToMulaw(inputStream) {
     // Monitor output stream
     outputStream.on('data', (chunk) => {
         bytesOutput += chunk.length;
-        console.log(`[TRANSCODE] Output chunk: ${chunk.length} bytes (total: ${bytesOutput} bytes)`);
+        
+        if (bytesOutput <= 50000 || bytesOutput % 10000 < chunk.length) {
+            console.log(`[TRANSCODE] Output chunk: ${chunk.length} bytes (total: ${bytesOutput} bytes)`);
+        }
     });
     
     outputStream.on('end', () => {
