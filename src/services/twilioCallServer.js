@@ -181,6 +181,9 @@ export function setupWebSocketServer(server) {
 
         console.log(`[INFO] Handling streaming call for appointment: ${appointmentId}`);
 
+        // Store the stream SID from Twilio's start message
+        let streamSid = null;
+
         // Initialize Google Speech-to-Text streaming
         let sttStream = null;
         let isListening = false;
@@ -416,8 +419,10 @@ export function setupWebSocketServer(server) {
                                 console.log(`[TTS] Paced chunk ${sentChunks}: ${chunk.length} bytes (buffer: ${audioBuffer.length} bytes remaining)`);
                             }
                             
+                            // ✅ CRITICAL FIX: Include streamSid in media message
                             ws.send(JSON.stringify({
                                 event: 'media',
+                                streamSid: streamSid, // ← THIS WAS MISSING!
                                 media: {
                                     payload: chunk.toString('base64'),
                                 },
@@ -572,7 +577,10 @@ export function setupWebSocketServer(server) {
 
             switch (msg.event) {
                 case 'start':
-                    console.log(`[INFO] Twilio stream started for ${appointmentId}.`);
+                    // ✅ CRITICAL: Capture the streamSid from Twilio
+                    streamSid = msg.start.streamSid;
+                    console.log(`[INFO] Twilio stream started for ${appointmentId}`);
+                    console.log(`[INFO] Stream SID: ${streamSid}`);
 
                     // Update appointment status to indicate streaming has started
                     (async () => {
