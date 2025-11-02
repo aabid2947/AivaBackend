@@ -60,20 +60,38 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
 
 /**
  * Convert MP3 audio stream to mulaw format for Twilio
- * @param {Stream} inputStream - MP3 audio stream from ElevenLabs
+ * @param {AsyncIterable|Stream} inputStream - MP3 audio stream from ElevenLabs
  * @returns {Stream} - mulaw audio stream
  */
-// 🛠️ CORRECTED CODE
-function transcodeMp3ToMulaw(inputStream) {
+async function transcodeMp3ToMulaw(inputStream) {
     const outputStream = new PassThrough();
+    const mp3Stream = new PassThrough();
+    
+    // Convert async iterator to Node.js readable stream
+    (async () => {
+        try {
+            // Check if it's an async iterator (ElevenLabs SDK v1.x returns this)
+            if (inputStream[Symbol.asyncIterator]) {
+                for await (const chunk of inputStream) {
+                    mp3Stream.write(chunk);
+                }
+                mp3Stream.end();
+            } else {
+                // It's already a readable stream, pipe it
+                inputStream.pipe(mp3Stream);
+            }
+        } catch (error) {
+            console.error('[ERROR] Failed to read input stream:', error.message);
+            mp3Stream.destroy(error);
+        }
+    })();
     
     const ffmpegProcess = ffmpeg()
-        .input(inputStream)
+        .input(mp3Stream)
         .inputFormat('mp3')
         .audioCodec('pcm_mulaw')
         .audioFrequency(8000)
         .audioChannels(1)
-        // .audioQuality(0) // ⬅️ ✅ This line is now removed
         .format('mulaw')
         .on('error', (err) => {
             console.error('[ERROR] FFmpeg transcoding failed:', err.message);
@@ -311,8 +329,8 @@ export function setupWebSocketServer(server) {
                     return;
                 }
 
-                // 2. Transcode MP3 to mulaw
-                const mulawStream = transcodeMp3ToMulaw(audioStream);
+                // 2. Transcode MP3 to mulaw (now async)
+                const mulawStream = await transcodeMp3ToMulaw(audioStream);
 
                 // 3. Stream the transcoded audio to Twilio
                 mulawStream.on('data', (chunk) => {
