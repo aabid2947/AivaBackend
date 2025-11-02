@@ -913,7 +913,7 @@ async function handleCriticalError(appointmentId, error, twiml) {
 export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
     if (!appointmentId) return;
     
-    console.log(`[INFO] updateCallStatus: ${appointmentId} - Status: ${callStatus}, AnsweredBy: ${answeredBy}`);
+    console.log(`[INFO] updateCallStatus: ${appointmentId} - Status: ${callStatus || 'undefined'}, AnsweredBy: ${answeredBy || 'undefined'}`);
     
     try {
         const appointmentRef = await getAppointmentRef(appointmentId);
@@ -926,7 +926,12 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
         
         const appointment = currentDoc.data();
         const currentState = appointment.conversationState;
-        let updatePayload = { lastCallStatus: callStatus };
+        
+        // *** FIX: Only include lastCallStatus if callStatus is defined ***
+        let updatePayload = {};
+        if (callStatus) {
+            updatePayload.lastCallStatus = callStatus;
+        }
 
         // Handle different call statuses
         if (answeredBy && answeredBy === 'machine_start') {
@@ -1004,11 +1009,12 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
         console.error(`[ERROR] updateCallStatus: Could not update status for ${appointmentId}. Error: ${error.message}`);
         
         try {
-            await addToConversationHistory(appointmentId, 'system', `Call status update failed: ${error.message}`, { 
-                error: true, 
-                callStatus, 
-                answeredBy 
-            });
+            // *** FIX: Only include defined values in metadata ***
+            const metadata = { error: true };
+            if (callStatus) metadata.callStatus = callStatus;
+            if (answeredBy) metadata.answeredBy = answeredBy;
+            
+            await addToConversationHistory(appointmentId, 'system', `Call status update failed: ${error.message}`, metadata);
         } catch (logError) {
             console.error(`[ERROR] Could not log call status error: ${logError.message}`);
         }

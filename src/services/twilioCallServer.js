@@ -5,11 +5,55 @@ import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
 import { generateGeminiText, generateGeminiTextStream } from '../utils/geminiClient.js';
 import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
+import { db, admin } from '../config/firebaseAdmin.js';
 
 const speechClient = new SpeechClient();
 
 // Voice ID for ElevenLabs (using Rachel/Sarah voice)
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+
+/**
+ * Get appointment reference from Firestore
+ */
+async function getAppointmentRef(appointmentId) {
+    try {
+        const snapshot = await db.collectionGroup('appointments').get();
+        const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
+        
+        if (!foundDoc) {
+            console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}.`);
+            throw new Error(`Could not find appointment ${appointmentId}`);
+        }
+        return foundDoc.ref;
+    } catch (error) {
+        console.error(`[ERROR] getAppointmentRef: Database error for ${appointmentId}: ${error.message}`);
+        throw error;
+    }
+}
+
+/**
+ * Add conversation history entry
+ */
+async function addToConversationHistory(appointmentId, speaker, message, metadata = {}) {
+    try {
+        const appointmentRef = await getAppointmentRef(appointmentId);
+        const timestamp = new Date().toISOString();
+        const historyEntry = {
+            speaker,
+            message: message.substring(0, 500),
+            timestamp,
+            ...metadata
+        };
+        
+        await appointmentRef.update({
+            conversationHistory: admin.firestore.FieldValue.arrayUnion(historyEntry),
+            lastActivity: timestamp
+        });
+    } catch (error) {
+        console.error(`[ERROR] Failed to add conversation history for ${appointmentId}: ${error.message}`);
+        // Don't throw - let the conversation continue
+    }
+}
 
 /**
  * Convert MP3 audio stream to mulaw format for Twilio
@@ -89,6 +133,9 @@ export function setupWebSocketServer(server) {
                         const transcript = data.results[0].alternatives[0].transcript;
                         console.log(`[STT] User said: "${transcript}"`);
                         
+                        // Log user input to conversation history
+                        addToConversationHistory(appointmentId, 'user', transcript).catch(console.error);
+                        
                         // Stop listening while AI responds
                         isListening = false;
                         
@@ -97,20 +144,51 @@ export function setupWebSocketServer(server) {
                         // 1. Cancel any audio that's already playing (for interruption)
                         cancelActiveStreams(); 
 
-                        // 2. Create the prompt
-                        const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
-                        User just said: "${transcript}"
-                        
-                        Respond naturally and professionally. Keep it brief (under 50 words).
-                        If they suggest a time, confirm it.
-                        If they ask questions, answer helpfully.
-                        If unclear, ask for clarification.`;
+                        // 2. Create the prompt with appointment context
+                        (async () => {
+                            try {
+                                const appointmentRef = await getAppointmentRef(appointmentId);
+                                const appointment = (await appointmentRef.get()).data();
+                                
+                                const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+                                const reason = appointment.reasonForAppointment || 'medical consultation';
+                                const userContact = appointment.userContact || 'No contact number on file';
+                                
+                                const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
+                                
+                                CONTEXT:
+                                - You are calling on behalf of: ${userName}
+                                - For: ${reason}
+                                - Client's contact: ${userContact}
+                                - User just said: "${transcript}"
+                                
+                                Respond naturally and professionally. Keep it brief (under 50 words).
+                                If they suggest a time, confirm it.
+                                If they ask for the client's contact info, provide: ${userContact}
+                                If they ask questions, answer helpfully.
+                                If unclear, ask for clarification.`;
 
-                        // 3. Call the streaming pipeline. 
-                        // We use .catch() because we don't 'await' it.
-                        streamGeminiToTwilio(prompt).catch(err => {
-                            console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
-                        });
+                                // 3. Call the streaming pipeline. 
+                                streamGeminiToTwilio(prompt).catch(err => {
+                                    console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
+                                });
+                            } catch (error) {
+                                console.error('[ERROR] Failed to get appointment context:', error);
+                                
+                                // Fallback prompt
+                                const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
+                                User just said: "${transcript}"
+                                
+                                Respond naturally and professionally. Keep it brief (under 50 words).
+                                If they suggest a time, confirm it.
+                                If they ask questions, answer helpfully.
+                                If unclear, ask for clarification.`;
+
+                                streamGeminiToTwilio(prompt).catch(err => {
+                                    console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
+                                });
+                            }
+                        })();
                     }
                 });
 
@@ -180,6 +258,9 @@ export function setupWebSocketServer(server) {
                 }
                 
                 console.log(`[STREAM] Complete response streamed: "${textBuffer}"`);
+                
+                // Log the complete AI response to conversation history
+                addToConversationHistory(appointmentId, 'assistant', textBuffer).catch(console.error);
                 
             } catch (error) {
                 console.error('[ERROR] Failed to stream from Gemini to Twilio:', error);
@@ -293,11 +374,32 @@ export function setupWebSocketServer(server) {
                     // Initialize STT stream
                     initializeSttStream();
                     
-                    // Send the initial greeting
-                    const greeting = `Hi! This is Sarah from Aiva Health. I'm calling to schedule an appointment. What time works best for you?`;
-                    
-                    // Call our streaming TTS function
-                    streamAudioToTwilio(greeting);
+                    // Get appointment details for personalized greeting
+                    (async () => {
+                        try {
+                            const appointmentRef = await getAppointmentRef(appointmentId);
+                            const appointment = (await appointmentRef.get()).data();
+                            
+                            const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
+                            const reason = appointment.reasonForAppointment || 'medical consultation';
+                            
+                            // Send personalized initial greeting
+                            const greeting = `Hi! This is Sarah from Aiva Health. I'm calling on behalf of ${userName} to schedule an appointment for ${reason}. What time works best for you?`;
+                            
+                            // Log the greeting
+                            addToConversationHistory(appointmentId, 'assistant', greeting).catch(console.error);
+                            
+                            // Call our streaming TTS function
+                            streamAudioToTwilio(greeting);
+                        } catch (error) {
+                            console.error('[ERROR] Failed to get appointment details:', error);
+                            
+                            // Fallback greeting
+                            const greeting = `Hi! This is Sarah from Aiva Health. I'm calling to schedule an appointment. What time works best for you?`;
+                            addToConversationHistory(appointmentId, 'assistant', greeting).catch(console.error);
+                            streamAudioToTwilio(greeting);
+                        }
+                    })();
                     break;
 
                 case 'media':

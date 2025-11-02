@@ -1,11 +1,7 @@
 // src/routes/twilioStreamRoutes.js
 import twilio from 'twilio';
 import { checkStreamingRequirements, createFallbackTwiML } from '../utils/streamingFallback.js';
-
-// This is where you would import your context/appointment-fetching logic
-// to get the appointmentId
-// For now, we'll assume it's passed in the Twilio request or is a test
-// import { getAppointmentRef } from '../config/firebaseAdmin.js'; 
+import * as twilioCallService from '../services/twilioCallService.js';
 
 export function setupTwilioStreamRoutes(app) {
     
@@ -73,6 +69,26 @@ export function setupTwilioStreamRoutes(app) {
             const fallbackTwiml = createFallbackTwiML(appointmentId, 'TwiML creation failed');
             res.type('text/xml');
             res.send(fallbackTwiml.toString());
+        }
+    });
+
+    /**
+     * Handle call status updates for streaming calls
+     * This prevents the Firestore "undefined" errors
+     */
+    app.post('/api/twilio/twiML/callStatus', async (req, res) => {
+        const { appointmentId } = req.query;
+        const { CallStatus, AnsweredBy } = req.body;
+
+        console.log(`[INFO] Streaming Call Status Webhook: Received status '${CallStatus || 'undefined'}' for appointmentId: ${appointmentId}. AnsweredBy: '${AnsweredBy || 'N/A'}'.`);
+
+        try {
+            // Use the existing twilioCallService to handle call status
+            await twilioCallService.updateCallStatus(appointmentId, CallStatus, AnsweredBy);
+            res.status(200).send('OK');
+        } catch (error) {
+            console.error(`[ERROR] Streaming callStatus: Failed to process status for appointment ${appointmentId}. Error: ${error.message}`);
+            res.status(500).send('Error processing status update.');
         }
     });
 }
