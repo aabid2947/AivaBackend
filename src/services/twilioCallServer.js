@@ -520,9 +520,14 @@ export function setupWebSocketServer(server) {
                             if (ws.readyState === 1) {
                                 ws.send(JSON.stringify({
                                     event: 'mark',
+                                    streamSid: streamSid, // Include streamSid
                                     mark: { name: `stream-${streamId}-complete` }
                                 }));
                             }
+                            
+                            // ✅ CRITICAL: Start listening for user response AFTER audio finishes
+                            console.log(`[STT] Audio playback complete. Starting to listen for user response...`);
+                            isListening = true;
                         }
                     }, 100); // Check every 100ms
                 });
@@ -629,7 +634,7 @@ export function setupWebSocketServer(server) {
                     break;
 
                 case 'media':
-                    // This is RAW μ-law audio from the user (base64 encoded)
+                    // Forward incoming audio to Google Speech-to-Text, but only if we're actively listening
                     if (isListening && sttStream) {
                         const audioChunk = Buffer.from(msg.media.payload, 'base64');
                         try {
@@ -638,6 +643,16 @@ export function setupWebSocketServer(server) {
                             console.error('[ERROR] Failed to write to STT stream:', error);
                             // Reinitialize STT stream if it fails
                             sttStream = initializeSttStream();
+                        }
+                    } else {
+                        // Log why we're not processing audio
+                        if (!isListening) {
+                            // Only log occasionally to avoid spam
+                            if (Math.random() < 0.01) { // 1% chance
+                                console.log('[STT] Not listening yet - waiting for AI to finish speaking');
+                            }
+                        } else if (!sttStream) {
+                            console.log('[STT] WARNING: isListening=true but sttStream is null!');
                         }
                     }
                     break;
@@ -671,12 +686,16 @@ export function setupWebSocketServer(server) {
                 case 'mark':
                     // This confirms our "ai-finished-speaking" mark was received.
                     // This is your signal to start listening to the user again.
-                    console.log('[INFO] Received mark confirmation from Twilio - starting to listen.');
+                    console.log(`[INFO] ✅ Received mark from Twilio: ${msg.mark?.name || 'unknown'}`);
+                    console.log(`[STT] Setting isListening = true`);
                     isListening = true;
 
                     // Reinitialize STT stream for next user input
                     if (!sttStream) {
+                        console.log(`[STT] Reinitializing STT stream for next user input...`);
                         initializeSttStream();
+                    } else {
+                        console.log(`[STT] STT stream already exists, ready to receive audio`);
                     }
                     break;
             }
