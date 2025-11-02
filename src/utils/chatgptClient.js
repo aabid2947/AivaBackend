@@ -101,36 +101,46 @@ async function* generateChatgptTextStream(prompt, opts = {}) {
         buffer = parts.pop();
 
         for (const part of parts) {
-            const line = part.trim();
-            if (!line) continue;
-            // Each event line starts with "data: "
-            const trimmed = line.replace(/^data: ?/, '');
-            if (trimmed === '[DONE]') {
-                return;
-            }
+            // Split SSE events - format is "event: name\ndata: {...}"
+            const lines = part.split('\n').filter(l => l.trim());
+            
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                
+                // Parse SSE data lines (ignore event: lines)
+                if (trimmed.startsWith('data: ')) {
+                    const dataStr = trimmed.substring(6).trim();
+                    if (dataStr === '[DONE]') {
+                        return;
+                    }
 
-            try {
-                const parsed = JSON.parse(trimmed);
-                // Responses API streaming chunk may include output_delta or choices
-                // Try to extract text in several known positions
-                // 1) responses output delta
-                if (parsed.output && Array.isArray(parsed.output)) {
-                    const out = parsed.output.map(o => (o.content || []).map(c => c.text || '').join('')).join('');
-                    if (out) yield out;
-                }
-
-                // 2) choices delta (chat completions style)
-                if (parsed.choices && parsed.choices[0]) {
-                    const choice = parsed.choices[0];
-                    if (choice.delta && (choice.delta.content || choice.delta.text)) {
-                        yield choice.delta.content || choice.delta.text || '';
-                    } else if (choice.text) {
-                        yield choice.text;
+                    try {
+                        const parsed = JSON.parse(dataStr);
+                        
+                        // OpenAI Responses API: look for delta in output_text.delta
+                        if (parsed.type === 'response.output_text.delta' && parsed.delta) {
+                            yield parsed.delta;
+                        }
+                        // Responses API streaming chunk may include output_delta or choices
+                        else if (parsed.output && Array.isArray(parsed.output)) {
+                            const out = parsed.output.map(o => (o.content || []).map(c => c.text || '').join('')).join('');
+                            if (out) yield out;
+                        }
+                        // Chat completions style
+                        else if (parsed.choices && parsed.choices[0]) {
+                            const choice = parsed.choices[0];
+                            if (choice.delta && (choice.delta.content || choice.delta.text)) {
+                                yield choice.delta.content || choice.delta.text || '';
+                            } else if (choice.text) {
+                                yield choice.text;
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore non-JSON lines (like event: name)
+                        console.warn(`[ChatGPT Stream] Failed to parse JSON: ${err.message}`);
                     }
                 }
-            } catch (err) {
-                // Non-json data: yield raw chunk as best-effort
-                yield trimmed;
             }
         }
     }
