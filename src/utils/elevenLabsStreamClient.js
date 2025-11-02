@@ -55,10 +55,10 @@ export async function generateSpeechStream(text, voiceId = VOICE_IDS.SARAH) {
     console.log(`[INFO] generateSpeechStream: Streaming audio for: "${text.substring(0, 50)}..."`);
     
     try {
-        const audioStream = await elevenLabs.textToSpeech.stream({
+        const audioStream = await elevenLabs.textToSpeech.stream.v1({ // ⬅️ ✅ ADDED .v1
             text: text,
             voiceId: voiceId,
-            modelId: "eleven_turbo_v2", // Use a fast model for streaming
+            modelId: "eleven_turbo_v2", 
             outputFormat: "mp3_44100_128",
             optimizeStreamingLatency: 3,
             voiceSettings: {
