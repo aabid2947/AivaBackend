@@ -15,7 +15,7 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 // import './src/cron/reminderScheduler.js'
 import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
-
+import appointmentRoutes from './src/routes/appointmentRoutes.js'
 // import { test } from './src/cron/appointmentScheduler.js';
 
 import { createServer } from 'http'; // 1. Import Node's native HTTP server
