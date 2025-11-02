@@ -15,8 +15,9 @@ cron.schedule('*/1 * * * *', async () => {
     console.log('Querying for pending appointments...');
     // --- UPDATED: Query now uses the correct fields 'status' and 'scheduleTime' ---
     const appointmentsRef = db.collectionGroup('appointments')
-        .where('status', '==', 'pending')
-        .where('scheduleTime', '<=', now); 
+        // .where('status', '==', 'pending')
+        // .where('scheduleTime', '<=', now); 
+
         
     const snapshot = await appointmentsRef.get();
     

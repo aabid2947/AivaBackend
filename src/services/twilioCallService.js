@@ -18,6 +18,17 @@ const CONVERSATION_STATES = {
 // Configuration constants
 const MAX_RETRIES = 3;
 
+// *** NEW: Helper function to log background database errors ***
+/**
+ * Logs errors from "fire and forget" database operations without crashing
+ * @param {Error} error - The error object
+ */
+const logDBError = (error) => {
+    if (error) {
+        console.error(`[ERROR] Background database write failed:`, error.message);
+    }
+};
+
 // Enhanced conversation context tracker
 class ConversationContext {
     constructor(appointment) {
@@ -230,6 +241,7 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
         });
     } catch (error) {
         console.error(`[ERROR] Failed to add conversation history for ${appointmentId}: ${error.message}`);
+        throw error; // Throw error so .catch(logDBError) can see it
     }
 }
 
@@ -243,6 +255,7 @@ async function updateConversationState(appointmentId, newState, metadata = {}) {
         });
     } catch (error) {
         console.error(`[ERROR] Failed to update conversation state for ${appointmentId}: ${error.message}`);
+        throw error; // Throw error so .catch(logDBError) can see it
     }
 }
 
@@ -366,7 +379,7 @@ function safeJsonParse(jsonString, context = '') {
     }
 }
 
-// initiateAppointmentFlow (Unchanged from last time)
+// *** UPDATED: initiateAppointmentFlow ***
 export async function initiateAppointmentFlow(appointmentId) {
     console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -379,7 +392,7 @@ export async function initiateAppointmentFlow(appointmentId) {
         const context = new ConversationContext(appointment);
         conversationContexts.set(appointmentId, context);
         
-        // Initialize conversation state and history
+        // *** FIX: This first update IS critical to clear history, so we 'await' it. ***
         await appointmentRef.update({ 
             retries: 0,
             conversationState: CONVERSATION_STATES.INITIAL_GREETING,
@@ -406,14 +419,16 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
 
         let greeting;
         try {
+            // *** This is the first main 'await' (Gemini) ***
             greeting = await generateGeminiText(greetingPrompt);
         } catch (error) {
             // Updated fallback greeting to match the new context
             greeting = `Hi! This is Sarah from Aiva Health. I'm calling on behalf of ${context.userName} regarding ${context.reason}. I was wondering, what time would work best for you?`;
         }
 
-        await addToConversationHistory(appointmentId, 'assistant', greeting);
-        await updateConversationState(appointmentId, CONVERSATION_STATES.ASKING_TIME);
+        // *** FIX: "Fire and Forget" logging. We don't 'await' these. ***
+        addToConversationHistory(appointmentId, 'assistant', greeting).catch(logDBError);
+        updateConversationState(appointmentId, CONVERSATION_STATES.ASKING_TIME).catch(logDBError);
 
         // Try to generate ElevenLabs audio for better quality
         const audioUrl = await generateAndCacheSpeech(greeting, appointmentId);
@@ -443,8 +458,9 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
         console.error(`[ERROR] initiateAppointmentFlow: Failed for ${appointmentId}. Error: ${error.message}`, error.stack);
         
         try {
-            await addToConversationHistory(appointmentId, 'system', `Call initialization failed: ${error.message}`, { error: true });
-            await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { failureReason: `Initialization error: ${error.message}` });
+            // *** FIX: Log failure without 'await' ***
+            addToConversationHistory(appointmentId, 'system', `Call initialization failed: ${error.message}`, { error: true }).catch(logDBError);
+            updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { failureReason: `Initialization error: ${error.message}` }).catch(logDBError);
         } catch (logError) {
             console.error(`[ERROR] Could not log initialization failure: ${logError.message}`);
         }
@@ -461,7 +477,7 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
     }
 }
 
-// handleAppointmentResponse (Unchanged from last time)
+// *** UPDATED: handleAppointmentResponse ***
 export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
     console.log(`[INFO] handleAppointmentResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -475,13 +491,15 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
 
         // Handle timeout
         if (timedOut) {
-            await addToConversationHistory(appointmentId, 'system', 'User did not respond (timeout)', { timeout: true });
+            // *** FIX: "Fire and Forget" logging ***
+            addToConversationHistory(appointmentId, 'system', 'User did not respond (timeout)', { timeout: true }).catch(logDBError);
             return await handleTimeout(appointmentId, appointment, twiml, 'general');
         }
 
         // Validate transcription
         if (!transcribedText || transcribedText.trim().length === 0) {
-            await addToConversationHistory(appointmentId, 'user', '[no audio detected]', { silent: true });
+            // *** FIX: "Fire and Forget" logging ***
+            addToConversationHistory(appointmentId, 'user', '[no audio detected]', { silent: true }).catch(logDBError);
             const clarificationMessage = "I couldn't quite hear that. Could you tell me when you'd like to schedule?";
             const audioUrl = await generateAndCacheSpeech(clarificationMessage, appointmentId);
             
@@ -503,7 +521,9 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         }
 
         // Log user response
-        await addToConversationHistory(appointmentId, 'user', transcribedText);
+        // *** FIX: "Fire and Forget" logging ***
+        addToConversationHistory(appointmentId, 'user', transcribedText).catch(logDBError);
+
 
         if (currentState === CONVERSATION_STATES.CONFIRMING_TIME) {
             currentState = CONVERSATION_STATES.ASKING_TIME;
@@ -516,6 +536,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             currentState
         );
 
+        // *** This is now the MAIN pause the user will feel (Gemini) ***
         let aiResponseRaw;
         try {
             aiResponseRaw = await generateGeminiText(aiPrompt);
@@ -536,10 +557,11 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         const nextState = (aiResult.nextState || 'clarifying_time').toLowerCase();
 
         // Log AI response and analysis
-        await addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
+        // *** FIX: "Fire and Forget" logging ***
+        addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
             nextState: nextState
-        });
+        }).catch(logDBError);
 
         // Update context based on AI
         if (nextState === CONVERSATION_STATES.ASKING_TIME) {
@@ -549,10 +571,11 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         // --- ACT ON AI RESPONSE ---
         
         // Update state in Firestore
-        await updateConversationState(appointmentId, nextState, { // <-- Use normalized state
+        // *** FIX: "Fire and Forget" state update ***
+        updateConversationState(appointmentId, nextState, { // <-- Use normalized state
             lastAnalysis: aiResult.analysisSummary,
             suggestedTime: aiResult.extractedTimeISO 
-        });
+        }).catch(logDBError);
 
         // Handle the next step based on the state AI determined
         switch (nextState) { // <-- Use normalized state
@@ -624,13 +647,12 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
 
     } catch (error) {
         console.error(`[ERROR] handleAppointmentResponse: Critical error for ${appointmentId}:`, error.message, error.stack);
-        await handleCriticalError(appointmentId, error, twiml);
+        await handleCriticalError(appointmentId, error, twiml); // *** Keep await here ***
         return twiml;
     }
 }
 
 // *** UPDATED: handleConfirmationResponse ***
-// This function now passes the appointmentId to the notification service
 export async function handleConfirmationResponse(appointmentId, transcribedText, timeToConfirmISO, timedOut) {
     console.log(`[INFO] handleConfirmationResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
@@ -642,12 +664,14 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         const context = conversationContexts.get(appointmentId) || new ConversationContext(appointment);
 
         if (timedOut) {
-            await addToConversationHistory(appointmentId, 'system', 'Confirmation timeout', { timeout: true });
+            // *** FIX: "Fire and Forget" logging ***
+            addToConversationHistory(appointmentId, 'system', 'Confirmation timeout', { timeout: true }).catch(logDBError);
             return await handleTimeout(appointmentId, appointment, twiml, 'confirmation', timeToConfirmISO);
         }
 
         if (!transcribedText || transcribedText.trim().length === 0) {
-            await addToConversationHistory(appointmentId, 'user', '[no audio in confirmation]', { silent: true });
+            // *** FIX: "Fire and Forget" logging ***
+            addToConversationHistory(appointmentId, 'user', '[no audio in confirmation]', { silent: true }).catch(logDBError);
             const formattedTime = new Date(timeToConfirmISO).toLocaleString('en-US', { timeStyle: 'short', dateStyle: 'medium' });
             const clarifyMessage = `I didn't catch that. For ${formattedTime}, is that a yes?`;
             const audioClarify = await generateAndCacheSpeech(clarifyMessage, appointmentId);
@@ -664,7 +688,8 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             return twiml;
         }
 
-        await addToConversationHistory(appointmentId, 'user', transcribedText, { confirmationResponse: true });
+        // *** FIX: "Fire and Forget" logging ***
+        addToConversationHistory(appointmentId, 'user', transcribedText, { confirmationResponse: true }).catch(logDBError);
 
         const aiPrompt = getSingleAiResponsePrompt(
             transcribedText, 
@@ -674,6 +699,7 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             timeToConfirmISO
         );
 
+        // *** This is the MAIN pause (Gemini) ***
         let aiResponseRaw;
         try {
             aiResponseRaw = await generateGeminiText(aiPrompt);
@@ -694,17 +720,22 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         const nextState = (aiResult.nextState || 'confirming_time').toLowerCase();
 
         // Log AI response
-        await addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
+        // *** FIX: "Fire and Forget" logging ***
+        addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
             nextState: nextState
-        });
+        }).catch(logDBError);
         
         // --- ACT ON AI RESPONSE ---
         
         // Update state in Firestore
-        await updateConversationState(appointmentId, nextState, { // <-- Use normalized state
-            lastAnalysis: aiResult.analysisSummary
-        });
+        // *** FIX: Only "Fire and Forget" update if NOT completed ***
+        if (nextState !== CONVERSATION_STATES.COMPLETED) {
+            updateConversationState(appointmentId, nextState, { // <-- Use normalized state
+                lastAnalysis: aiResult.analysisSummary
+            }).catch(logDBError);
+        }
+
 
         switch (nextState) { // <-- Use normalized state
 
@@ -718,12 +749,15 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 }
                 twiml.hangup();
                 
+                // *** CRITICAL: We MUST 'await' these final writes. ***
+                // This ensures the appointment is confirmed before the function ends.
+                // The user is hearing the goodbye, so this delay is acceptable.
                 await updateConversationState(appointmentId, CONVERSATION_STATES.COMPLETED, {
                     finalAppointmentTime: timeToConfirmISO,
                     confirmedAt: new Date().toISOString()
                 });
                 
-                // *** FIX: Pass the appointmentId to the notification function ***
+                // *** CRITICAL: We 'await' this to ensure notification is sent. ***
                 await sendAppointmentBookingNotification(appointment, timeToConfirmISO, appointmentId);
                 break;
             
@@ -753,7 +787,11 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             default:
                 // AI was unclear. Ask for confirmation again.
                 const clarificationAttempts = (appointment.confirmationClarifications || 0) + 1;
-                await appointmentRef.update({ confirmationClarifications: clarificationAttempts });
+                
+                // *** FIX: "Fire and Forget" this update ***
+                getAppointmentRef(appointmentId)
+                    .then(ref => ref.update({ confirmationClarifications: clarificationAttempts }))
+                    .catch(logDBError);
 
                 if (clarificationAttempts >= 2) {
                     const escalateMessage = "I'm having trouble understanding. Let me have someone call you back to finalize this. Thanks!";
@@ -764,6 +802,8 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                         twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, escalateMessage);
                     }
                     twiml.hangup();
+                    
+                    // *** CRITICAL: 'await' this final failure state ***
                     await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
                         failureReason: 'Unable to get clear confirmation',
                         suggestedTime: timeToConfirmISO
@@ -785,12 +825,12 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         return twiml;
     } catch (error) {
         console.error(`[ERROR] handleConfirmationResponse: Critical error for ${appointmentId}:`, error.message);
-        await handleCriticalError(appointmentId, error, twiml);
+        await handleCriticalError(appointmentId, error, twiml); // *** Keep await here ***
         return twiml;
     }
 }
 
-// Centralized Error/Timeout Handlers (Unchanged)
+// *** UPDATED: Centralized Error/Timeout Handlers ***
 async function handleTimeout(appointmentId, appointment, twiml, context, timeToConfirmISO = null) {
     let retries;
     let maxRetries;
@@ -822,12 +862,18 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
             twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, failMessage);
         }
         twiml.hangup();
+        
+        // *** CRITICAL: 'await' this final failure state ***
         await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
             failureReason: `Multiple timeouts (${context})`,
             finalRetries: retries 
         });
     } else {
-        await getAppointmentRef(appointmentId).then(ref => ref.update({ [stateToUpdate]: retries }));
+        // *** FIX: "Fire and Forget" the retry count update ***
+        getAppointmentRef(appointmentId)
+            .then(ref => ref.update({ [stateToUpdate]: retries }))
+            .catch(logDBError);
+            
         const audioRetry = await generateAndCacheSpeech(retryMessage, appointmentId);
         const gather = twiml.gather({
             input: 'speech',
@@ -846,6 +892,7 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
 
 async function handleCriticalError(appointmentId, error, twiml) {
     try {
+        // *** CRITICAL: 'await' this to ensure error is logged ***
         await addToConversationHistory(appointmentId, 'system', `Critical error: ${error.message}`, { error: true, critical: true });
     } catch (logError) {
         console.error(`[ERROR] Could not log critical error: ${logError.message}`);
@@ -860,7 +907,9 @@ async function handleCriticalError(appointmentId, error, twiml) {
     twiml.hangup();
 }
 
-// updateCallStatus (Unchanged)
+// *** UNCHANGED: updateCallStatus ***
+// This function is called by Twilio's status webhook, not during the live
+// TwiML exchange. Its latency does not impact the user, so 'await' is fine.
 export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
     if (!appointmentId) return;
     
