@@ -399,15 +399,28 @@ export function setupWebSocketServer(server) {
                     if (activeStreams.has(streamId) && ws.readyState === 1) { // 1 = OPEN
                         chunkCount++;
 
-                        // Check if chunk is mostly silence (0xFF in mulaw)
-                        const silentBytes = Array.from(chunk).filter(byte => byte === 0xFF || byte === 0xFE || byte === 0xFD).length;
-                        const silentRatio = silentBytes / chunk.length;
+                        // Check if the START of the chunk is silence (0xFF in mulaw)
+                        // For the first chunk, check if it starts with silence
+                        const firstBytes = chunk.slice(0, Math.min(100, chunk.length));
+                        const firstBytesSilent = Array.from(firstBytes).filter(byte => byte === 0xFF).length;
+                        const firstBytesRatio = firstBytesSilent / firstBytes.length;
+                        
+                        const allSilentBytes = Array.from(chunk).filter(byte => byte === 0xFF || byte === 0xFE || byte === 0xFD).length;
+                        const silentRatio = allSilentBytes / chunk.length;
                         const isMostlySilent = silentRatio > 0.9; // 90% silence
                         
-                        // Skip initial silence chunks (first 2 chunks if mostly silent)
-                        if (chunkCount <= 2 && isMostlySilent) {
+                        // Skip the first chunk ONLY if it starts with >50% 0xFF bytes
+                        if (chunkCount === 1 && firstBytesRatio > 0.5) {
                             skippedSilence += chunk.length;
-                            console.log(`[TTS] Skipping silent chunk ${chunkCount}: ${chunk.length} bytes (${(silentRatio * 100).toFixed(1)}% silence)`);
+                            console.log(`[TTS] 🔇 SKIPPING first chunk - starts with ${(firstBytesRatio * 100).toFixed(1)}% silence (0xFF)`);
+                            console.log(`[TTS] First 40 bytes (hex):`, chunk.slice(0, Math.min(40, chunk.length)).toString('hex'));
+                            return;
+                        }
+                        
+                        // Skip additional chunks if they're >90% silent
+                        if (chunkCount <= 3 && isMostlySilent) {
+                            skippedSilence += chunk.length;
+                            console.log(`[TTS] 🔇 SKIPPING silent chunk ${chunkCount}: ${chunk.length} bytes (${(silentRatio * 100).toFixed(1)}% silence)`);
                             console.log(`[TTS] First 20 bytes (hex):`, chunk.slice(0, Math.min(20, chunk.length)).toString('hex'));
                             return;
                         }
