@@ -391,16 +391,52 @@ export function setupWebSocketServer(server) {
                 let sentChunks = 0;
                 let totalBytes = 0;
                 let skippedSilence = 0;
+                let audioBuffer = Buffer.alloc(0); // Buffer to hold audio data
+                const CHUNK_SIZE = 160; // Twilio expects 160 bytes (20ms of 8kHz audio)
+                const CHUNK_INTERVAL = 20; // Send every 20ms
+                
                 console.log(`[TTS] Step 3: Starting transmission to Twilio WebSocket...`);
                 console.log(`[TTS] WebSocket state: ${ws.readyState} (1=OPEN)`);
+                console.log(`[TTS] Will pace audio at ${CHUNK_SIZE} bytes every ${CHUNK_INTERVAL}ms`);
+
+                // Function to send audio at the correct pace
+                let pacingInterval = null;
+                const startPacing = () => {
+                    if (pacingInterval) return; // Already pacing
+                    
+                    pacingInterval = setInterval(() => {
+                        if (audioBuffer.length >= CHUNK_SIZE && activeStreams.has(streamId) && ws.readyState === 1) {
+                            const chunk = audioBuffer.slice(0, CHUNK_SIZE);
+                            audioBuffer = audioBuffer.slice(CHUNK_SIZE);
+                            
+                            sentChunks++;
+                            totalBytes += chunk.length;
+                            
+                            if (sentChunks <= 10 || sentChunks % 100 === 0) {
+                                console.log(`[TTS] Paced chunk ${sentChunks}: ${chunk.length} bytes (buffer: ${audioBuffer.length} bytes remaining)`);
+                            }
+                            
+                            ws.send(JSON.stringify({
+                                event: 'media',
+                                media: {
+                                    payload: chunk.toString('base64'),
+                                },
+                            }));
+                        } else if (audioBuffer.length === 0 && !mulawStream.readable) {
+                            // No more audio and stream is done
+                            clearInterval(pacingInterval);
+                            pacingInterval = null;
+                            console.log(`[TTS] Pacing complete`);
+                        }
+                    }, CHUNK_INTERVAL);
+                };
 
                 mulawStream.on('data', (chunk) => {
-                    // Only send if this stream is still active
+                    // Only process if this stream is still active
                     if (activeStreams.has(streamId) && ws.readyState === 1) { // 1 = OPEN
                         chunkCount++;
 
                         // Check if the START of the chunk is silence (0xFF in mulaw)
-                        // For the first chunk, check if it starts with silence
                         const firstBytes = chunk.slice(0, Math.min(100, chunk.length));
                         const firstBytesSilent = Array.from(firstBytes).filter(byte => byte === 0xFF).length;
                         const firstBytesRatio = firstBytesSilent / firstBytes.length;
@@ -425,29 +461,23 @@ export function setupWebSocketServer(server) {
                             return;
                         }
 
-                        sentChunks++;
-                        totalBytes += chunk.length;
+                        // Add chunk to buffer for paced sending
+                        audioBuffer = Buffer.concat([audioBuffer, chunk]);
                         
-                        // Log first few chunks in detail
-                        if (sentChunks <= 10) {
-                            console.log(`[TTS] Sending chunk ${sentChunks} (recv ${chunkCount}): ${chunk.length} bytes (total: ${totalBytes} bytes)${isMostlySilent ? ' [MOSTLY SILENT]' : ' [HAS AUDIO]'}`);
-                            console.log(`[TTS] First 20 bytes (hex):`, chunk.slice(0, Math.min(20, chunk.length)).toString('hex'));
-                            if (sentChunks <= 3) {
-                                console.log(`[TTS] Last 20 bytes (hex):`, chunk.slice(-20).toString('hex'));
+                        // Log received chunks
+                        if (chunkCount <= 10) {
+                            console.log(`[TTS] Received chunk ${chunkCount}: ${chunk.length} bytes (buffer now: ${audioBuffer.length} bytes)${isMostlySilent ? ' [MOSTLY SILENT]' : ' [HAS AUDIO]'}`);
+                            if (chunkCount <= 3) {
+                                console.log(`[TTS] First 20 bytes (hex):`, chunk.slice(0, Math.min(20, chunk.length)).toString('hex'));
                                 console.log(`[TTS] Silent ratio: ${(silentRatio * 100).toFixed(1)}%`);
                             }
-                        } else if (sentChunks % 50 === 0) {
-                            // Log every 50th chunk thereafter
-                            console.log(`[TTS] Progress: ${sentChunks} chunks sent, ${totalBytes} bytes...`);
                         }
-
-                        // Send to Twilio
-                        ws.send(JSON.stringify({
-                            event: 'media',
-                            media: {
-                                payload: chunk.toString('base64'),
-                            },
-                        }));
+                        
+                        // Start pacing if not already started
+                        if (!pacingInterval) {
+                            console.log(`[TTS] Starting paced transmission...`);
+                            startPacing();
+                        }
                     } else {
                         if (!activeStreams.has(streamId)) {
                             console.log(`[TTS] Stream ${streamId} no longer active, stopping transmission`);
@@ -459,23 +489,37 @@ export function setupWebSocketServer(server) {
                 });
 
                 mulawStream.on('end', () => {
-                    console.log(`[TTS] ========== Stream ${streamId} COMPLETE ==========`);
-                    console.log(`[TTS] Total chunks received: ${chunkCount}`);
-                    console.log(`[TTS] Chunks sent to Twilio: ${sentChunks}`);
-                    console.log(`[TTS] Silent bytes skipped: ${skippedSilence}`);
-                    console.log(`[TTS] Audio bytes sent: ${totalBytes}`);
+                    console.log(`[TTS] Mulaw stream ended. Waiting for buffer to drain...`);
+                    console.log(`[TTS] Buffer remaining: ${audioBuffer.length} bytes`);
                     
-                    // Remove from active streams
-                    activeStreams.delete(streamId);
+                    // Wait for pacing to finish sending remaining audio
+                    const waitForBuffer = setInterval(() => {
+                        if (audioBuffer.length === 0 || !activeStreams.has(streamId)) {
+                            clearInterval(waitForBuffer);
+                            if (pacingInterval) {
+                                clearInterval(pacingInterval);
+                                pacingInterval = null;
+                            }
+                            
+                            console.log(`[TTS] ========== Stream ${streamId} COMPLETE ==========`);
+                            console.log(`[TTS] Total chunks received: ${chunkCount}`);
+                            console.log(`[TTS] Paced chunks sent to Twilio: ${sentChunks}`);
+                            console.log(`[TTS] Silent bytes skipped: ${skippedSilence}`);
+                            console.log(`[TTS] Audio bytes sent: ${totalBytes}`);
+                            
+                            // Remove from active streams
+                            activeStreams.delete(streamId);
 
-                    // Send a "mark" message to signal end of this audio segment
-                    console.log(`[TTS] Sending completion mark: stream-${streamId}-complete`);
-                    if (ws.readyState === 1) {
-                        ws.send(JSON.stringify({
-                            event: 'mark',
-                            mark: { name: `stream-${streamId}-complete` }
-                        }));
-                    }
+                            // Send a "mark" message to signal end of this audio segment
+                            console.log(`[TTS] Sending completion mark: stream-${streamId}-complete`);
+                            if (ws.readyState === 1) {
+                                ws.send(JSON.stringify({
+                                    event: 'mark',
+                                    mark: { name: `stream-${streamId}-complete` }
+                                }));
+                            }
+                        }
+                    }, 100); // Check every 100ms
                 });
 
                 mulawStream.on('error', (error) => {
@@ -483,8 +527,14 @@ export function setupWebSocketServer(server) {
                     console.error(`[TTS] Error:`, error);
                     console.error(`[TTS] Error stack:`, error.stack);
                     console.error(`[TTS] Chunks received before error: ${chunkCount}`);
-                    console.error(`[TTS] Chunks sent before error: ${sentChunks}`);
+                    console.error(`[TTS] Paced chunks sent before error: ${sentChunks}`);
                     console.error(`[TTS] Bytes sent before error: ${totalBytes}`);
+
+                    // Stop pacing
+                    if (pacingInterval) {
+                        clearInterval(pacingInterval);
+                        pacingInterval = null;
+                    }
 
                     // Remove from active streams
                     activeStreams.delete(streamId);
