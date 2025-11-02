@@ -67,24 +67,50 @@ async function transcodeMp3ToMulaw(inputStream) {
     const outputStream = new PassThrough();
     const mp3Stream = new PassThrough();
     
+    let bytesReceived = 0;
+    let chunksReceived = 0;
+    
+    console.log('[TRANSCODE] Starting MP3 to mulaw conversion...');
+    console.log('[TRANSCODE] Input stream type:', inputStream.constructor.name);
+    console.log('[TRANSCODE] Has async iterator:', !!inputStream[Symbol.asyncIterator]);
+    
     // Convert async iterator to Node.js readable stream
     (async () => {
         try {
             // Check if it's an async iterator (ElevenLabs SDK v1.x returns this)
             if (inputStream[Symbol.asyncIterator]) {
+                console.log('[TRANSCODE] Processing as async iterator...');
                 for await (const chunk of inputStream) {
+                    chunksReceived++;
+                    const chunkSize = chunk.length || chunk.byteLength || 0;
+                    bytesReceived += chunkSize;
+                    console.log(`[TRANSCODE] Chunk ${chunksReceived}: ${chunkSize} bytes (total: ${bytesReceived} bytes)`);
                     mp3Stream.write(chunk);
                 }
+                console.log(`[TRANSCODE] Async iterator complete. Total: ${chunksReceived} chunks, ${bytesReceived} bytes`);
                 mp3Stream.end();
             } else {
                 // It's already a readable stream, pipe it
+                console.log('[TRANSCODE] Processing as readable stream...');
+                inputStream.on('data', (chunk) => {
+                    chunksReceived++;
+                    const chunkSize = chunk.length || chunk.byteLength || 0;
+                    bytesReceived += chunkSize;
+                    console.log(`[TRANSCODE] Stream chunk ${chunksReceived}: ${chunkSize} bytes (total: ${bytesReceived} bytes)`);
+                });
+                inputStream.on('end', () => {
+                    console.log(`[TRANSCODE] Stream complete. Total: ${chunksReceived} chunks, ${bytesReceived} bytes`);
+                });
                 inputStream.pipe(mp3Stream);
             }
         } catch (error) {
             console.error('[ERROR] Failed to read input stream:', error.message);
+            console.error('[ERROR] Stack:', error.stack);
             mp3Stream.destroy(error);
         }
     })();
+    
+    let ffmpegBytesOutput = 0;
     
     const ffmpegProcess = ffmpeg()
         .input(mp3Stream)
@@ -95,15 +121,30 @@ async function transcodeMp3ToMulaw(inputStream) {
         .format('mulaw')
         .on('error', (err) => {
             console.error('[ERROR] FFmpeg transcoding failed:', err.message);
+            console.error('[ERROR] FFmpeg error details:', err);
             outputStream.destroy(err);
         })
         .on('end', () => {
-            console.log('[INFO] Audio transcoding completed');
+            console.log(`[INFO] Audio transcoding completed. Output: ${ffmpegBytesOutput} bytes`);
         })
         .on('start', (commandLine) => {
             console.log('[INFO] FFmpeg transcoding started:', commandLine);
         })
-        .pipe(outputStream, { end: true });
+        .on('stderr', (stderrLine) => {
+            console.log('[FFMPEG]', stderrLine);
+        });
+    
+    const ffmpegOutput = ffmpegProcess.pipe(outputStream, { end: true });
+    
+    // Monitor output stream
+    outputStream.on('data', (chunk) => {
+        ffmpegBytesOutput += chunk.length;
+        console.log(`[TRANSCODE] Output chunk: ${chunk.length} bytes (total output: ${ffmpegBytesOutput} bytes)`);
+    });
+    
+    outputStream.on('end', () => {
+        console.log(`[TRANSCODE] Output stream ended. Total output: ${ffmpegBytesOutput} bytes`);
+    });
         
     return outputStream;
 }
@@ -314,14 +355,19 @@ export function setupWebSocketServer(server) {
          */
         async function streamAudioToTwilio(textStream) {
             const streamId = ++currentStreamId;
-            console.log(`[TTS] Starting stream ${streamId}: "${textStream}"`);
+            console.log(`[TTS] ========== Starting stream ${streamId} ==========`);
+            console.log(`[TTS] Text to synthesize: "${textStream}"`);
+            console.log(`[TTS] Text length: ${textStream.length} characters`);
 
             // Add this stream to active streams
             activeStreams.add(streamId);
 
             try {
                 // 1. Get audio stream from ElevenLabs using our working client
+                console.log(`[TTS] Step 1: Calling ElevenLabs API...`);
                 const audioStream = await generateSpeechStream(textStream, VOICE_IDS.SARAH);
+                console.log(`[TTS] Step 1 complete: ElevenLabs stream received`);
+                console.log(`[TTS] Stream type:`, audioStream ? audioStream.constructor.name : 'null');
 
                 // Check if this stream is still valid (not superseded)
                 if (!activeStreams.has(streamId)) {
@@ -330,27 +376,58 @@ export function setupWebSocketServer(server) {
                 }
 
                 // 2. Transcode MP3 to mulaw (now async)
+                console.log(`[TTS] Step 2: Starting transcoding to mulaw...`);
                 const mulawStream = await transcodeMp3ToMulaw(audioStream);
+                console.log(`[TTS] Step 2 complete: Transcoding stream ready`);
 
                 // 3. Stream the transcoded audio to Twilio
+                let chunkCount = 0;
+                let totalBytes = 0;
+                console.log(`[TTS] Step 3: Starting transmission to Twilio WebSocket...`);
+                console.log(`[TTS] WebSocket state: ${ws.readyState} (1=OPEN)`);
+
                 mulawStream.on('data', (chunk) => {
                     // Only send if this stream is still active
                     if (activeStreams.has(streamId) && ws.readyState === 1) { // 1 = OPEN
+                        chunkCount++;
+                        totalBytes += chunk.length;
+
+                        // Log first few chunks in detail
+                        if (chunkCount <= 3) {
+                            console.log(`[TTS] Sending chunk ${chunkCount}: ${chunk.length} bytes (total: ${totalBytes} bytes)`);
+                            console.log(`[TTS] First 20 bytes (hex):`, chunk.slice(0, Math.min(20, chunk.length)).toString('hex'));
+                            console.log(`[TTS] Base64 payload length:`, chunk.toString('base64').length);
+                        } else if (chunkCount % 50 === 0) {
+                            // Log every 50th chunk thereafter
+                            console.log(`[TTS] Progress: ${chunkCount} chunks, ${totalBytes} bytes sent...`);
+                        }
+
                         ws.send(JSON.stringify({
                             event: 'media',
                             media: {
                                 payload: chunk.toString('base64'),
                             },
                         }));
+                    } else {
+                        if (!activeStreams.has(streamId)) {
+                            console.log(`[TTS] Stream ${streamId} no longer active, stopping transmission`);
+                        }
+                        if (ws.readyState !== 1) {
+                            console.log(`[TTS] WebSocket not open (state: ${ws.readyState}), stopping transmission`);
+                        }
                     }
                 });
 
                 mulawStream.on('end', () => {
+                    console.log(`[TTS] ========== Stream ${streamId} COMPLETE ==========`);
+                    console.log(`[TTS] Total chunks sent: ${chunkCount}`);
+                    console.log(`[TTS] Total bytes sent: ${totalBytes}`);
+                    
                     // Remove from active streams
                     activeStreams.delete(streamId);
 
                     // Send a "mark" message to signal end of this audio segment
-                    console.log(`[INFO] Stream ${streamId} finished. Sending mark.`);
+                    console.log(`[TTS] Sending completion mark: stream-${streamId}-complete`);
                     if (ws.readyState === 1) {
                         ws.send(JSON.stringify({
                             event: 'mark',
@@ -360,7 +437,11 @@ export function setupWebSocketServer(server) {
                 });
 
                 mulawStream.on('error', (error) => {
-                    console.error(`[ERROR] Stream ${streamId} transcoding failed:`, error);
+                    console.error(`[TTS] ========== Stream ${streamId} ERROR ==========`);
+                    console.error(`[TTS] Error:`, error);
+                    console.error(`[TTS] Error stack:`, error.stack);
+                    console.error(`[TTS] Chunks sent before error: ${chunkCount}`);
+                    console.error(`[TTS] Bytes sent before error: ${totalBytes}`);
 
                     // Remove from active streams
                     activeStreams.delete(streamId);
@@ -375,7 +456,9 @@ export function setupWebSocketServer(server) {
                 });
 
             } catch (error) {
-                console.error(`[ERROR] Stream ${streamId} failed:`, error);
+                console.error(`[TTS] ========== Stream ${streamId} EXCEPTION ==========`);
+                console.error(`[TTS] Exception:`, error);
+                console.error(`[TTS] Exception stack:`, error.stack);
 
                 // Remove from active streams
                 activeStreams.delete(streamId);
