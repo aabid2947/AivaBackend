@@ -408,21 +408,28 @@ export function setupWebSocketServer(server) {
                     if (pacingInterval) return; // Already pacing
                     
                     pacingInterval = setInterval(() => {
-                        if (audioBuffer.length >= CHUNK_SIZE && activeStreams.has(streamId) && ws.readyState === 1) {
-                            const chunk = audioBuffer.slice(0, CHUNK_SIZE);
-                            audioBuffer = audioBuffer.slice(CHUNK_SIZE);
+                        // Check if we should send audio
+                        const hasFullChunk = audioBuffer.length >= CHUNK_SIZE;
+                        const hasRemainder = audioBuffer.length > 0 && !mulawStream.readable;
+                        const shouldSend = (hasFullChunk || hasRemainder) && activeStreams.has(streamId) && ws.readyState === 1;
+                        
+                        if (shouldSend) {
+                            // Send full chunk or remaining bytes
+                            const chunkToSend = hasFullChunk ? CHUNK_SIZE : audioBuffer.length;
+                            const chunk = audioBuffer.slice(0, chunkToSend);
+                            audioBuffer = audioBuffer.slice(chunkToSend);
                             
                             sentChunks++;
                             totalBytes += chunk.length;
                             
-                            if (sentChunks <= 10 || sentChunks % 100 === 0) {
-                                console.log(`[TTS] Paced chunk ${sentChunks}: ${chunk.length} bytes (buffer: ${audioBuffer.length} bytes remaining)`);
+                            if (sentChunks <= 10 || sentChunks % 100 === 0 || chunk.length < CHUNK_SIZE) {
+                                console.log(`[TTS] Paced chunk ${sentChunks}: ${chunk.length} bytes (buffer: ${audioBuffer.length} bytes remaining)${chunk.length < CHUNK_SIZE ? ' [FINAL]' : ''}`);
                             }
                             
                             // ✅ CRITICAL FIX: Include streamSid in media message
                             ws.send(JSON.stringify({
                                 event: 'media',
-                                streamSid: streamSid, // ← THIS WAS MISSING!
+                                streamSid: streamSid,
                                 media: {
                                     payload: chunk.toString('base64'),
                                 },
@@ -431,7 +438,7 @@ export function setupWebSocketServer(server) {
                             // No more audio and stream is done
                             clearInterval(pacingInterval);
                             pacingInterval = null;
-                            console.log(`[TTS] Pacing complete`);
+                            console.log(`[TTS] Pacing complete - all audio sent`);
                         }
                     }, CHUNK_INTERVAL);
                 };
