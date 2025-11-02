@@ -313,11 +313,16 @@ export function setupWebSocketServer(server) {
             };
 
             const processBuffer = async () => {
-                if (!sttBuffer || sttBuffer.length === 0) return;
+                if (!sttBuffer || sttBuffer.length === 0) {
+                    console.log(`[STT] processBuffer called but buffer is empty`);
+                    return;
+                }
                 
                 // Check if we have enough speech data
                 const totalBytes = sttBuffer.reduce((sum, buf) => sum + buf.length, 0);
                 const minBytes = (MIN_SPEECH_DURATION / 1000) * 8000; // bytes for min duration at 8kHz
+                
+                console.log(`[STT] Processing buffer: ${sttBuffer.length} chunks, ${totalBytes} bytes (min: ${minBytes} bytes)`);
                 
                 if (totalBytes < minBytes) {
                     console.log(`[STT] Buffer too small (${totalBytes} bytes), ignoring`);
@@ -333,7 +338,10 @@ export function setupWebSocketServer(server) {
                 isListening = false;
 
                 try {
+                    console.log(`[STT] Converting ${mulawBuffer.length} bytes of μ-law to WAV...`);
                     const wavBuffer = await mulawBufferToWavBuffer(mulawBuffer);
+                    console.log(`[STT] Conversion complete, WAV size: ${wavBuffer.length} bytes`);
+                    
                     const transcript = await transcribeWithOpenAI(wavBuffer);
 
                     if (transcript) {
@@ -376,12 +384,17 @@ export function setupWebSocketServer(server) {
                             streamGeminiToTwilio(prompt).catch(() => {});
                         }
                     } else {
+                        console.log(`[STT] No transcript returned - saving audio for offline processing`);
                         await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
                     }
                 } catch (err) {
+                    console.error(`[STT] Error processing buffer:`, err.message);
                     await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
                 } finally {
-                    setTimeout(() => { isListening = true; }, 250);
+                    setTimeout(() => { 
+                        console.log(`[STT] Re-enabling listening after processing`);
+                        isListening = true; 
+                    }, 250);
                 }
             };
 
