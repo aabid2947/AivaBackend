@@ -13,10 +13,14 @@ import twilioRoutes from './src/routes/twilioRoutes.js';
 // import audioRoutes from './src/routes/audioRoutes.js'; // 1. IMPORT the new audio routes
 // import './src/cron/emailScheduler.js';
 // import './src/cron/reminderScheduler.js'
-// import './src/cron/appointmentScheduler.js'
+import './src/cron/appointmentScheduler.js'
 import mpesaRoutes from './src/routes/mpesaRoutes.js';
 import appointmentRoutes from './src/routes/appointmentRoutes.js'
 // import { test } from './src/cron/appointmentScheduler.js';
+
+import { createServer } from 'http'; // 1. Import Node's native HTTP server
+import { setupWebSocketServer } from './src/services/twilioCallServer.js'; // 2. Import the new WebSocket server
+import { setupTwilioStreamRoutes } from './src/routes/twilioStreamRoutes.js'; // 3. Import the new TwiML route
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -57,6 +61,7 @@ app.use('/api/twilio', twilioRoutes);
 app.use('/api/payments', mpesaRoutes);
 // --- NEW ---
 app.use('/api/appointments', appointmentRoutes); // Use appointment routes
+setupTwilioStreamRoutes(app);
 // test()
 // Basic error handler
 app.use((err, req, res, next) => {
@@ -80,7 +85,19 @@ res.status(500).json({ message: 'Something broke on the server\!' });
 });
 
 
-app.listen(PORT, () => {
+// app.listen(PORT, () => {
+// console.log(`AIVA API Server running on port ${PORT}`);
+// console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+// });
+
+
+const server = createServer(app); // 5. Create an HTTP server from the Express app
+
+setupWebSocketServer(server); // 6. Pass the HTTP server to your WebSocket setup
+
+// *** UPDATED: Make the HTTP server listen, not the app ***
+server.listen(PORT, () => { // 7. Change 'app.listen' to 'server.listen'
 console.log(`AIVA API Server running on port ${PORT}`);
 console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+console.log(`WebSocket server initialized.`);
 });

@@ -1,0 +1,361 @@
+// src/services/streamingCallServer.js
+import { WebSocketServer } from 'ws';
+import { SpeechClient } from '@google-cloud/speech';
+import ffmpeg from 'fluent-ffmpeg';
+import { PassThrough } from 'stream';
+import { generateGeminiText, generateGeminiTextStream } from '../utils/geminiClient.js';
+import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
+
+const speechClient = new SpeechClient();
+
+// Voice ID for ElevenLabs (using Rachel/Sarah voice)
+const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
+
+/**
+ * Convert MP3 audio stream to mulaw format for Twilio
+ * @param {Stream} inputStream - MP3 audio stream from ElevenLabs
+ * @returns {Stream} - mulaw audio stream
+ */
+function transcodeMp3ToMulaw(inputStream) {
+    const outputStream = new PassThrough();
+    
+    // Create FFmpeg command to convert MP3 stream to mulaw
+    const ffmpegProcess = ffmpeg()
+        .input(inputStream)
+        .inputFormat('mp3')
+        .audioCodec('pcm_mulaw')
+        .audioFrequency(8000)
+        .audioChannels(1)
+        .audioQuality(0)
+        .format('mulaw')
+        .on('error', (err) => {
+            console.error('[ERROR] FFmpeg transcoding failed:', err.message);
+            outputStream.destroy(err);
+        })
+        .on('end', () => {
+            console.log('[INFO] Audio transcoding completed');
+        })
+        .on('start', (commandLine) => {
+            console.log('[INFO] FFmpeg transcoding started:', commandLine);
+        })
+        .pipe(outputStream, { end: true });
+        
+    return outputStream;
+}
+
+// --- Import Context ---
+// You will need your ConversationContext and map
+// import { conversationContexts, ConversationContext } from './twilioCallService.js'; 
+
+
+export function setupWebSocketServer(server) {
+    
+    // Create a WebSocket server that attaches to your main HTTP server
+    // and listens on a specific path.
+    const wss = new WebSocketServer({ server, path: '/audio-stream' });
+
+    wss.on('connection', (ws, req) => {
+        console.log(`[INFO] WebSocket connection established: ${req.url}`);
+        
+        // Get the appointmentId from the URL
+        const urlParts = req.url.split('/');
+        const appointmentId = urlParts[urlParts.length - 1];
+        
+        console.log(`[INFO] Handling streaming call for appointment: ${appointmentId}`);
+
+        // Initialize Google Speech-to-Text streaming
+        let sttStream = null;
+        let isListening = false;
+
+        function initializeSttStream() {
+            const request = {
+                config: {
+                    encoding: 'MULAW',
+                    sampleRateHertz: 8000,
+                    languageCode: 'en-US',
+                    enableAutomaticPunctuation: true,
+                },
+                interimResults: false,
+            };
+
+            sttStream = speechClient
+                .streamingRecognize(request)
+                .on('error', (error) => {
+                    console.error('[ERROR] STT stream error:', error);
+                    sttStream = null;
+                })
+                .on('data', (data) => {
+                    if (data.results[0] && data.results[0].isFinal) {
+                        const transcript = data.results[0].alternatives[0].transcript;
+                        console.log(`[STT] User said: "${transcript}"`);
+                        
+                        // Stop listening while AI responds
+                        isListening = false;
+                        
+                        // ✅ FIX: Call the new, fast streaming pipeline directly
+
+                        // 1. Cancel any audio that's already playing (for interruption)
+                        cancelActiveStreams(); 
+
+                        // 2. Create the prompt
+                        const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
+                        User just said: "${transcript}"
+                        
+                        Respond naturally and professionally. Keep it brief (under 50 words).
+                        If they suggest a time, confirm it.
+                        If they ask questions, answer helpfully.
+                        If unclear, ask for clarification.`;
+
+                        // 3. Call the streaming pipeline. 
+                        // We use .catch() because we don't 'await' it.
+                        streamGeminiToTwilio(prompt).catch(err => {
+                            console.error("[ERROR] Unhandled streamGeminiToTwilio error:", err);
+                        });
+                    }
+                });
+
+            return sttStream;
+        }
+
+
+        /**
+         * Stream text from Gemini to ElevenLabs to Twilio in real-time
+         * This eliminates the waterfall delay by processing text chunks as they arrive
+         */
+        async function streamGeminiToTwilio(prompt) {
+            try {
+                console.log(`[STREAM] Starting real-time Gemini -> ElevenLabs -> Twilio pipeline`);
+                
+                let textBuffer = '';
+                let sentenceBuffer = '';
+                const minChunkSize = 10; // Minimum characters before sending to TTS
+                
+                // Start streaming from Gemini
+                const geminiStream = generateGeminiTextStream(prompt);
+                
+                for await (const textChunk of geminiStream) {
+                    textBuffer += textChunk;
+                    sentenceBuffer += textChunk;
+                    
+                    console.log(`[STREAM] Received text chunk: "${textChunk}"`);
+                    
+                    // Look for sentence boundaries or sufficient text accumulation
+                    const sentenceEnders = /[.!?]\s/g;
+                    const sentenceMatch = sentenceBuffer.match(sentenceEnders);
+                    
+                    // If we have a complete sentence or enough text, stream it
+                    if (sentenceMatch || sentenceBuffer.length >= minChunkSize * 3) {
+                        let textToStream;
+                        
+                        if (sentenceMatch) {
+                            // Send complete sentences
+                            const lastSentenceEnd = sentenceBuffer.lastIndexOf(sentenceMatch[sentenceMatch.length - 1]) + sentenceMatch[sentenceMatch.length - 1].length;
+                            textToStream = sentenceBuffer.substring(0, lastSentenceEnd).trim();
+                            sentenceBuffer = sentenceBuffer.substring(lastSentenceEnd);
+                        } else {
+                            // Send chunk if we have enough text
+                            textToStream = sentenceBuffer.trim();
+                            sentenceBuffer = '';
+                        }
+                        
+                        if (textToStream.length > 0) {
+                            console.log(`[STREAM] Streaming to TTS: "${textToStream}"`);
+                            
+                            // Stream this text chunk to ElevenLabs/Twilio immediately
+                            // Don't await - let it stream in parallel with Gemini generation
+                            streamAudioToTwilio(textToStream).catch(error => {
+                                console.error('[ERROR] Failed to stream audio chunk:', error);
+                            });
+                            
+                            // Small delay to prevent overwhelming the TTS API
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
+                    }
+                }
+                
+                // Send any remaining text
+                if (sentenceBuffer.trim().length > 0) {
+                    console.log(`[STREAM] Streaming final chunk: "${sentenceBuffer.trim()}"`);
+                    await streamAudioToTwilio(sentenceBuffer.trim());
+                }
+                
+                console.log(`[STREAM] Complete response streamed: "${textBuffer}"`);
+                
+            } catch (error) {
+                console.error('[ERROR] Failed to stream from Gemini to Twilio:', error);
+                
+                // Fallback to non-streaming
+                const fallbackResponse = "I apologize for the delay. Could you please repeat your question?";
+                await streamAudioToTwilio(fallbackResponse);
+            }
+        }
+
+        let currentStreamId = 0;
+        let activeStreams = new Set();
+
+        /**
+         * Cancel all active audio streams (for interruption handling)
+         */
+        function cancelActiveStreams() {
+            console.log(`[STREAM] Cancelling ${activeStreams.size} active streams`);
+            activeStreams.clear();
+        }
+
+        /**
+         * This function takes text and streams audio back to Twilio.
+         */
+        async function streamAudioToTwilio(textStream) {
+            const streamId = ++currentStreamId;
+            console.log(`[TTS] Starting stream ${streamId}: "${textStream}"`);
+            
+            // Add this stream to active streams
+            activeStreams.add(streamId);
+            
+            try {
+                // 1. Get audio stream from ElevenLabs using our working client
+                const audioStream = await generateSpeechStream(textStream, VOICE_IDS.SARAH);
+
+                // Check if this stream is still valid (not superseded)
+                if (!activeStreams.has(streamId)) {
+                    console.log(`[TTS] Stream ${streamId} cancelled before audio generation`);
+                    return;
+                }
+
+                // 2. Transcode MP3 to mulaw
+                const mulawStream = transcodeMp3ToMulaw(audioStream);
+                
+                // 3. Stream the transcoded audio to Twilio
+                mulawStream.on('data', (chunk) => {
+                    // Only send if this stream is still active
+                    if (activeStreams.has(streamId) && ws.readyState === 1) { // 1 = OPEN
+                        ws.send(JSON.stringify({
+                            event: 'media',
+                            media: {
+                                payload: chunk.toString('base64'),
+                            },
+                        }));
+                    }
+                });
+                
+                mulawStream.on('end', () => {
+                    // Remove from active streams
+                    activeStreams.delete(streamId);
+                    
+                    // Send a "mark" message to signal end of this audio segment
+                    console.log(`[INFO] Stream ${streamId} finished. Sending mark.`);
+                    if (ws.readyState === 1) {
+                        ws.send(JSON.stringify({
+                            event: 'mark',
+                            mark: { name: `stream-${streamId}-complete` }
+                        }));
+                    }
+                });
+
+                mulawStream.on('error', (error) => {
+                    console.error(`[ERROR] Stream ${streamId} transcoding failed:`, error);
+                    
+                    // Remove from active streams
+                    activeStreams.delete(streamId);
+                    
+                    // Send mark anyway to continue conversation
+                    if (ws.readyState === 1) {
+                        ws.send(JSON.stringify({
+                            event: 'mark',
+                            mark: { name: `stream-${streamId}-error` }
+                        }));
+                    }
+                });
+
+            } catch (error) {
+                console.error(`[ERROR] Stream ${streamId} failed:`, error);
+                
+                // Remove from active streams
+                activeStreams.delete(streamId);
+                
+                // Fallback: Send a mark to continue conversation
+                if (ws.readyState === 1) {
+                    ws.send(JSON.stringify({
+                        event: 'mark',
+                        mark: { name: `stream-${streamId}-failed` }
+                    }));
+                }
+            }
+        }
+        
+        // --- Handle incoming messages from Twilio ---
+        ws.on('message', (message) => {
+            const msg = JSON.parse(message);
+
+            switch (msg.event) {
+                case 'start':
+                    console.log(`[INFO] Twilio stream started for ${appointmentId}.`);
+                    
+                    // Initialize STT stream
+                    initializeSttStream();
+                    
+                    // Send the initial greeting
+                    const greeting = `Hi! This is Sarah from Aiva Health. I'm calling to schedule an appointment. What time works best for you?`;
+                    
+                    // Call our streaming TTS function
+                    streamAudioToTwilio(greeting);
+                    break;
+
+                case 'media':
+                    // This is RAW μ-law audio from the user (base64 encoded)
+                    if (isListening && sttStream) {
+                        const audioChunk = Buffer.from(msg.media.payload, 'base64');
+                        try {
+                            sttStream.write(audioChunk);
+                        } catch (error) {
+                            console.error('[ERROR] Failed to write to STT stream:', error);
+                            // Reinitialize STT stream if it fails
+                            sttStream = initializeSttStream();
+                        }
+                    }
+                    break;
+
+                case 'stop':
+                    console.log(`[INFO] Twilio stream stopped.`);
+                    // Clean up STT stream
+                    if (sttStream) {
+                        sttStream.destroy();
+                        sttStream = null;
+                    }
+                    isListening = false;
+                    break;
+                
+                case 'mark':
+                    // This confirms our "ai-finished-speaking" mark was received.
+                    // This is your signal to start listening to the user again.
+                    console.log('[INFO] Received mark confirmation from Twilio - starting to listen.');
+                    isListening = true;
+                    
+                    // Reinitialize STT stream for next user input
+                    if (!sttStream) {
+                        initializeSttStream();
+                    }
+                    break;
+            }
+        });
+
+        ws.on('close', (code, reason) => {
+            console.log(`[INFO] WebSocket closed: ${code} ${reason.toString()}`);
+            // Clean up STT stream
+            if (sttStream) {
+                sttStream.destroy();
+                sttStream = null;
+            }
+            isListening = false;
+        });
+
+        ws.on('error', (error) => {
+            console.error('[ERROR] WebSocket error:', error);
+            // Clean up STT stream
+            if (sttStream) {
+                sttStream.destroy();
+                sttStream = null;
+            }
+            isListening = false;
+        });
+    });
+}

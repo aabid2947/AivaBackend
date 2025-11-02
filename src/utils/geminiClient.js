@@ -101,6 +101,52 @@ export async function generateGeminiText(prompt, history = []) {
 }
 
 /**
+ * Generates streaming content using the Gemini API for text-only prompts.
+ * This allows for real-time streaming of the AI response, reducing latency.
+ * @param {string} prompt The prompt to send to Gemini.
+ * @param {Array<{role: string, parts: Array<{text: string}>}>} history Optional chat history.
+ * @returns {Promise<AsyncGenerator<string>>} An async generator that yields text chunks as they arrive.
+ */
+export async function* generateGeminiTextStream(prompt, history = []) {
+  console.log(`[INFO] generateGeminiTextStream: Called for streaming response.`);
+  if (!genAI) {
+    console.error('[ERROR] generateGeminiTextStream: Gemini API key not configured.');
+    yield "I'm sorry, I'm having technical difficulties right now.";
+    return;
+  }
+
+  try {
+    console.log(`[DEBUG] generateGeminiTextStream: Prompt: "${prompt}"`);
+    const model = genAI.getGenerativeModel({ model: modelConfig.modelName });
+    
+    const chatParts = [ ...history, { role: "user", parts: [{ text: prompt }] }];
+    const streamResult = await model.generateContentStream({
+        contents: chatParts,
+        generationConfig: modelConfig.generationConfig,
+        safetySettings: modelConfig.safetySettings,
+    });
+
+    let fullResponse = '';
+    
+    for await (const chunk of streamResult.stream) {
+      const chunkText = chunk.candidates?.[0]?.content?.parts?.map(part => part.text).join('') || '';
+      
+      if (chunkText) {
+        console.log(`[DEBUG] generateGeminiTextStream: Received chunk: "${chunkText}"`);
+        fullResponse += chunkText;
+        yield chunkText;
+      }
+    }
+    
+    console.log(`[DEBUG] generateGeminiTextStream: Complete response: "${fullResponse}"`);
+    
+  } catch (error) {
+    console.error(`[ERROR] generateGeminiTextStream: Error streaming from Gemini API: ${error.message}`);
+    yield "I'm having trouble processing your request. Could you try again?";
+  }
+}
+
+/**
  * Generates content using the Gemini API for prompts that include an image.
  * @param {string} prompt The text part of the prompt.
  * @param {Buffer} imageBuffer The buffer of the image file.
