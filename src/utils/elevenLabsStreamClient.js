@@ -24,14 +24,14 @@ export async function generateSpeech(text, voiceId = VOICE_IDS.SARAH) {
     console.log(`[INFO] generateSpeech (non-streaming): Generating audio for: "${text.substring(0, 50)}..."`);
     
     try {
-        const audioBuffer = await elevenLabs.textToSpeech.v1({
+        // Use the correct API method from the official SDK
+        const audioBuffer = await elevenLabs.textToSpeech.convert(voiceId, {
             text: text,
-            voiceId: voiceId,
-            modelId: "eleven_monolingual_v1",
-            outputFormat: "mp3_44100_128",
-            voiceSettings: {
+            model_id: "eleven_monolingual_v1",
+            output_format: "mp3_44100_128",
+            voice_settings: {
                 stability: 0.5,
-                similarityBoost: 0.75,
+                similarity_boost: 0.75,
             },
         });
         
@@ -55,20 +55,19 @@ export async function generateSpeechStream(text, voiceId = VOICE_IDS.SARAH) {
     console.log(`[INFO] generateSpeechStream: Streaming audio for: "${text.substring(0, 50)}..."`);
     
     try {
-        const audioStream = await elevenLabs.textToSpeech.stream.v1({ // ⬅️ ✅ ADDED .v1
+        // Use the correct streaming API method from the official SDK
+        const audioStream = await elevenLabs.textToSpeech.convertAsStream(voiceId, {
             text: text,
-            voiceId: voiceId,
-            modelId: "eleven_turbo_v2", 
-            outputFormat: "mp3_44100_128",
-            optimizeStreamingLatency: 3,
-            voiceSettings: {
+            model_id: "eleven_turbo_v2",
+            output_format: "mp3_44100_128",
+            optimize_streaming_latency: 3,
+            voice_settings: {
                 stability: 0.5,
-                similarityBoost: 0.75,
+                similarity_boost: 0.75,
             },
         });
 
-        // The official SDK's stream method *already* returns
-        // a Node.js Readable stream. This will not be empty.
+        // The official SDK's convertAsStream method returns a Node.js Readable stream
         return audioStream;
 
     } catch (error) {
