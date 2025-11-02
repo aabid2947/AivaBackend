@@ -47,7 +47,7 @@ export function setupTwilioStreamRoutes(app) {
             const connect = twiml.connect();
             
             // Use secure WebSocket for production
-            const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'wss' : 'ws';
+            const protocol = 'wss';
             const webSocketUrl = `${protocol}://${req.headers.host}/audio-stream/${appointmentId}`;
             console.log(`[INFO] Telling Twilio to connect to: ${webSocketUrl}`);
             
