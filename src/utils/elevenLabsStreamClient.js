@@ -1,4 +1,4 @@
-// src/utils/elevenLabsClient.js
+// src/utils/elevenLabsStreamClient.js
 import { ElevenLabsClient } from "elevenlabs";
 
 // Available voices for text-to-speech
@@ -16,26 +16,23 @@ const elevenLabs = new ElevenLabsClient({
 /**
  * Generate non-streaming speech.
  * This is used by the old twilioCallService.js as a fallback.
- * @param {string} text - The text to convert to speech
- * @param {string} voiceId - The voice ID to use
- * @returns {Promise<Buffer>} - A buffer of the audio data
  */
 export async function generateSpeech(text, voiceId = VOICE_IDS.SARAH) {
     console.log(`[INFO] generateSpeech (non-streaming): Generating audio for: "${text.substring(0, 50)}..."`);
     
     try {
-        // Use the correct API method from the official SDK
-        const audioBuffer = await elevenLabs.textToSpeech.convert(voiceId, {
+        // 🛠️ FIX: The correct method is .v1()
+        const audioBuffer = await elevenLabs.textToSpeech.v1({
             text: text,
-            model_id: "eleven_monolingual_v1",
-            output_format: "mp3_44100_128",
-            voice_settings: {
+            voiceId: voiceId,
+            modelId: "eleven_monolingual_v1",
+            outputFormat: "mp3_44100_128",
+            voiceSettings: {
                 stability: 0.5,
-                similarity_boost: 0.75,
+                similarityBoost: 0.75,
             },
         });
         
-        // The SDK returns the raw buffer directly
         return audioBuffer;
 
     } catch (error) {
@@ -47,27 +44,24 @@ export async function generateSpeech(text, voiceId = VOICE_IDS.SARAH) {
 /**
  * Generate speech and stream it.
  * This is used by twilioCallServer.js for fast streaming.
- * @param {string} text - The text to convert to speech
- * @param {string} voiceId - The voice ID to use
- * @returns {Promise<ReadableStream>} - A readable stream of audio data
  */
 export async function generateSpeechStream(text, voiceId = VOICE_IDS.SARAH) {
     console.log(`[INFO] generateSpeechStream: Streaming audio for: "${text.substring(0, 50)}..."`);
     
     try {
-        // Use the correct streaming API method from the official SDK
-        const audioStream = await elevenLabs.textToSpeech.convertAsStream(voiceId, {
+        // 🛠️ FIX: The correct method is .stream.v1()
+        const audioStream = await elevenLabs.textToSpeech.stream.v1({
             text: text,
-            model_id: "eleven_turbo_v2",
-            output_format: "mp3_44100_128",
-            optimize_streaming_latency: 3,
-            voice_settings: {
+            voiceId: voiceId,
+            modelId: "eleven_turbo_v2",
+            outputFormat: "mp3_44100_128",
+            optimizeStreamingLatency: 3,
+            voiceSettings: {
                 stability: 0.5,
-                similarity_boost: 0.75,
+                similarityBoost: 0.75,
             },
         });
 
-        // The official SDK's convertAsStream method returns a Node.js Readable stream
         return audioStream;
 
     } catch (error) {
@@ -88,15 +82,8 @@ export async function initializeElevenLabs() {
     try {
         console.log('[INFO] Testing ElevenLabs API connection...');
         const user = await elevenLabs.user.get();
-        
         console.log('[INFO] ElevenLabs client initialized successfully.');
         console.log(`[INFO] Account: ${user.subscription?.tier || 'Free'}`);
-        
-        if (user.subscription) {
-            const quota = user.subscription;
-            console.log(`[INFO] Character quota: ${quota.character_count || 'Unknown'}/${quota.character_limit || 'Unknown'}`);
-        }
-        
         return true;
     } catch (error) {
         console.error('[ERROR] Failed to initialize ElevenLabs client:', error.message);
