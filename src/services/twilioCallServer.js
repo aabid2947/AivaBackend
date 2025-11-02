@@ -439,10 +439,20 @@ export function setupWebSocketServer(server) {
                     }
                 },
                 destroy: () => {
-                    console.log(`[STT] Stream destroyed`);
+                    console.log(`[STT] Stream destroyed - checking for pending speech...`);
                     if (inactivityTimer) clearTimeout(inactivityTimer);
-                    sttBuffer = [];
-                    speechDetected = false;
+                    
+                    // If we have collected speech, process it immediately before destroying
+                    if (speechDetected && sttBuffer.length > 0) {
+                        console.log(`[STT] ⚠️ Processing ${sttBuffer.length} buffered chunks before destroying stream`);
+                        processBuffer().catch(err => {
+                            console.error(`[STT] Error processing buffer on destroy:`, err);
+                        });
+                    } else {
+                        console.log(`[STT] No speech to process (speechDetected=${speechDetected}, bufferSize=${sttBuffer.length})`);
+                        sttBuffer = [];
+                        speechDetected = false;
+                    }
                 }
             };
 
