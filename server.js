@@ -25,6 +25,9 @@ import { setupTwilioStreamRoutes } from './src/routes/twilioStreamRoutes.js'; //
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// 🛠️ Trust the first proxy - this fixes the WebSocket protocol detection
+app.set('trust proxy', 1);
+
 // Initialize Firebase Admin SDK
 initFirebaseAdmin();
 
