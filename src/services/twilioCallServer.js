@@ -286,12 +286,36 @@ export function setupWebSocketServer(server) {
             // Buffer-based STT workaround (no Google Speech)
             let sttBuffer = [];
             let inactivityTimer = null;
-            const SILENCE_MS = 700;
+            let speechDetected = false;
+            const SILENCE_MS = 1200; // Wait 1.2s after speech stops
+            const MIN_SPEECH_DURATION = 300; // Minimum 300ms of speech to process
+
+            const isSilence = (chunk) => {
+                // μ-law silence is typically 0xFF (or 0xFE, 0xFD nearby)
+                const silentBytes = Array.from(chunk).filter(byte => 
+                    byte === 0xFF || byte === 0xFE || byte === 0xFD || byte === 0x7F
+                ).length;
+                const silenceRatio = silentBytes / chunk.length;
+                return silenceRatio > 0.85; // 85% or more silence
+            };
 
             const processBuffer = async () => {
                 if (!sttBuffer || sttBuffer.length === 0) return;
+                
+                // Check if we have enough speech data
+                const totalBytes = sttBuffer.reduce((sum, buf) => sum + buf.length, 0);
+                const minBytes = (MIN_SPEECH_DURATION / 1000) * 8000; // bytes for min duration at 8kHz
+                
+                if (totalBytes < minBytes) {
+                    console.log(`[STT] Buffer too small (${totalBytes} bytes), ignoring`);
+                    sttBuffer = [];
+                    speechDetected = false;
+                    return;
+                }
+
                 const mulawBuffer = Buffer.concat(sttBuffer);
                 sttBuffer = [];
+                speechDetected = false;
 
                 isListening = false;
 
@@ -352,12 +376,25 @@ export function setupWebSocketServer(server) {
                 write: (chunk) => {
                     try {
                         const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'base64');
-                        sttBuffer.push(raw);
-
-                        if (inactivityTimer) clearTimeout(inactivityTimer);
-                        inactivityTimer = setTimeout(() => {
-                            processBuffer().catch(() => {});
-                        }, SILENCE_MS);
+                        const isCurrentlySilent = isSilence(raw);
+                        
+                        if (!isCurrentlySilent) {
+                            // We detected speech
+                            speechDetected = true;
+                            sttBuffer.push(raw);
+                            
+                            // Reset timer - keep collecting while speech continues
+                            if (inactivityTimer) clearTimeout(inactivityTimer);
+                            inactivityTimer = setTimeout(() => {
+                                processBuffer().catch(() => {});
+                            }, SILENCE_MS);
+                        } else if (speechDetected) {
+                            // Silence after speech - still collect (might be pause mid-sentence)
+                            sttBuffer.push(raw);
+                            // Don't reset timer - let it fire if silence continues
+                        }
+                        // else: silence before any speech detected - ignore completely
+                        
                     } catch (e) {
                         // ignore
                     }
@@ -365,6 +402,7 @@ export function setupWebSocketServer(server) {
                 destroy: () => {
                     if (inactivityTimer) clearTimeout(inactivityTimer);
                     sttBuffer = [];
+                    speechDetected = false;
                 }
             };
 
