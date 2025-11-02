@@ -1,5 +1,5 @@
 // src/utils/elevenLabsClient.js
-import { ElevenLabsClient, stream } from 'elevenlabs-node';
+import { ElevenLabsClient } from "elevenlabs";
 
 // Available voices for text-to-speech
 export const VOICE_IDS = {
@@ -12,6 +12,37 @@ export const VOICE_IDS = {
 const elevenLabs = new ElevenLabsClient({
     apiKey: process.env.ELEVENLABS_API_KEY,
 });
+
+/**
+ * Generate non-streaming speech.
+ * This is used by the old twilioCallService.js as a fallback.
+ * @param {string} text - The text to convert to speech
+ * @param {string} voiceId - The voice ID to use
+ * @returns {Promise<Buffer>} - A buffer of the audio data
+ */
+export async function generateSpeech(text, voiceId = VOICE_IDS.SARAH) {
+    console.log(`[INFO] generateSpeech (non-streaming): Generating audio for: "${text.substring(0, 50)}..."`);
+    
+    try {
+        const audioBuffer = await elevenLabs.textToSpeech.v1({
+            text: text,
+            voiceId: voiceId,
+            modelId: "eleven_monolingual_v1",
+            outputFormat: "mp3_44100_128",
+            voiceSettings: {
+                stability: 0.5,
+                similarityBoost: 0.75,
+            },
+        });
+        
+        // The SDK returns the raw buffer directly
+        return audioBuffer;
+
+    } catch (error) {
+        console.error('[ERROR] generateSpeech (non-streaming) failed:', error.message);
+        throw error;
+    }
+}
 
 /**
  * Generate speech and stream it.
@@ -35,20 +66,9 @@ export async function generateSpeechStream(text, voiceId = VOICE_IDS.SARAH) {
             },
         });
 
-        // The 'stream' function from the SDK is an async generator.
-        // We need to convert it into a standard Node.js Readable stream
-        // so that ffmpeg can pipe it.
-        const nodeStream = new ReadableStream({
-            async start(controller) {
-                for await (const chunk of audioStream) {
-                    controller.enqueue(chunk);
-                }
-                controller.close();
-            }
-        });
-
-        // This is the correct way to convert a web stream to a Node.js stream
-        return stream.webToNode(nodeStream);
+        // 🛠️ FIX: The official SDK's stream method *already* returns
+        // a Node.js Readable stream. No conversion is needed.
+        return audioStream;
 
     } catch (error) {
         console.error('[ERROR] generateSpeechStream failed:', error.message);
