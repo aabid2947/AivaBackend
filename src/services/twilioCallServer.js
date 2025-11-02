@@ -57,7 +57,12 @@ async function mulawBufferToWavBuffer(mulawBuffer) {
 
 async function transcribeWithOpenAI(wavBuffer) {
     const OPENAI_KEY = process.env.OPENAI_API_KEY;
-    if (!OPENAI_KEY) return null;
+    if (!OPENAI_KEY) {
+        console.log('[STT] ⚠️ OPENAI_API_KEY not set - transcription unavailable');
+        return null;
+    }
+
+    console.log(`[STT] Calling OpenAI Whisper API with ${wavBuffer.length} bytes...`);
 
     const formData = new (global.FormData || require('form-data'))();
     try {
@@ -80,18 +85,26 @@ async function transcribeWithOpenAI(wavBuffer) {
         Object.assign(headers, formData.getHeaders());
     }
 
-    const res = await fetchImpl('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers,
-        body: formData
-    });
+    try {
+        const res = await fetchImpl('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers,
+            body: formData
+        });
 
-    if (!res.ok) {
+        if (!res.ok) {
+            const errorText = await res.text();
+            console.error(`[STT] ❌ OpenAI Whisper API error: ${res.status} - ${errorText}`);
+            return null;
+        }
+
+        const json = await res.json();
+        console.log(`[STT] ✅ Whisper transcription successful: "${json.text}"`);
+        return json.text || null;
+    } catch (error) {
+        console.error(`[STT] ❌ Whisper API exception:`, error.message);
         return null;
     }
-
-    const json = await res.json();
-    return json.text || null;
 }
 
 async function saveMulawForOffline(mulawBuffer, appointmentId) {
@@ -378,28 +391,41 @@ export function setupWebSocketServer(server) {
                         const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'base64');
                         const isCurrentlySilent = isSilence(raw);
                         
+                        // Log speech detection status occasionally
+                        if (Math.random() < 0.02) { // 2% sampling
+                            console.log(`[STT] Audio chunk: silent=${isCurrentlySilent}, speechDetected=${speechDetected}, bufferSize=${sttBuffer.length}`);
+                        }
+                        
                         if (!isCurrentlySilent) {
                             // We detected speech
+                            if (!speechDetected) {
+                                console.log(`[STT] 🗣️ SPEECH STARTED - beginning to collect audio`);
+                            }
                             speechDetected = true;
                             sttBuffer.push(raw);
                             
                             // Reset timer - keep collecting while speech continues
                             if (inactivityTimer) clearTimeout(inactivityTimer);
                             inactivityTimer = setTimeout(() => {
+                                console.log(`[STT] ⏱️ Inactivity timeout fired - processing buffer`);
                                 processBuffer().catch(() => {});
                             }, SILENCE_MS);
                         } else if (speechDetected) {
                             // Silence after speech - still collect (might be pause mid-sentence)
                             sttBuffer.push(raw);
                             // Don't reset timer - let it fire if silence continues
+                            if (Math.random() < 0.05) { // 5% sampling
+                                console.log(`[STT] 🔇 Silence after speech - collecting, buffer=${sttBuffer.length} chunks`);
+                            }
                         }
                         // else: silence before any speech detected - ignore completely
                         
                     } catch (e) {
-                        // ignore
+                        console.error(`[STT] Error in write:`, e);
                     }
                 },
                 destroy: () => {
+                    console.log(`[STT] Stream destroyed`);
                     if (inactivityTimer) clearTimeout(inactivityTimer);
                     sttBuffer = [];
                     speechDetected = false;
