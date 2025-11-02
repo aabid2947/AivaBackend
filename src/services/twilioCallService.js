@@ -18,17 +18,6 @@ const CONVERSATION_STATES = {
 // Configuration constants
 const MAX_RETRIES = 3;
 
-// *** NEW: Helper function to log background database errors ***
-/**
- * Logs errors from "fire and forget" database operations without crashing
- * @param {Error} error - The error object
- */
-const logDBError = (error) => {
-    if (error) {
-        console.error(`[ERROR] Background database write failed:`, error.message);
-    }
-};
-
 // Enhanced conversation context tracker
 class ConversationContext {
     constructor(appointment) {
@@ -45,6 +34,11 @@ class ConversationContext {
         this.extractedInfo = {};
         this.conversationMood = 'neutral';
         this.topicsDiscussed = [];
+        this.conversationHistory = []; // In-memory conversation history
+        this.currentState = CONVERSATION_STATES.INITIAL_GREETING;
+        this.retries = 0;
+        this.confirmationRetries = 0;
+        this.confirmationClarifications = 0;
     }
     
     addSuggestedTime(time) {
@@ -77,6 +71,15 @@ class ConversationContext {
         }
     }
     
+    addToHistory(speaker, message, metadata = {}) {
+        this.conversationHistory.push({
+            speaker,
+            message: message.substring(0, 500),
+            timestamp: new Date().toISOString(),
+            ...metadata
+        });
+    }
+    
     getContextSummary() {
         return {
             userName: this.userName,
@@ -102,41 +105,28 @@ const audioBuffers = new Map();
 
 /**
  * Helper function to generate speech using ElevenLabs and prepare it for Twilio
- * @param {string} text - Text to convert to speech
- * @param {string} appointmentId - Appointment ID for caching
- * @returns {Promise<string>} - URL or reference to audio that can be played by Twilio
  */
 async function generateAndCacheSpeech(text, appointmentId) {
     try {
-        console.log(`[INFO] Generating ElevenLabs speech for appointment ${appointmentId}`);
         const audioBuffer = await generateSpeech(text, VOICE_IDS.SARAH);
-        
-        // Store the audio buffer temporarily (you might want to upload to cloud storage for production)
         const audioKey = `${appointmentId}_${Date.now()}`;
         audioBuffers.set(audioKey, audioBuffer);
-        
-        // In production, upload to S3/Cloud Storage and return public URL
-        // For now, we'll use TTS through Twilio as fallback
-        console.log(`[INFO] Audio generated and cached with key: ${audioKey}`);
-        return null; // Will use Twilio Say as fallback
+        return null;
     } catch (error) {
-        console.error(`[ERROR] Failed to generate ElevenLabs speech:`, error.message);
-        return null; // Will use Twilio Say as fallback
+        return null;
     }
 }
 
-const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory, currentState, timeToConfirmISO = null) => {
+const getSingleAiResponsePrompt = (transcribedText, context, currentState, timeToConfirmISO = null) => {
     const today = new Date();
     const timeZone = 'EAT (UTC+3)';
     const contextData = context.getContextSummary();
     
-    // *** FIX: Format contact number for clear TTS pronunciation ***
-    // This turns "+919..." into "plus 9 1 9..."
     const formattedUserContact = contextData.userContact 
         ? contextData.userContact.replace(/\+/g, 'plus ').replace(/(\d)/g, '$1 ').trim() 
         : 'No contact number on file';
 
-    let historyContext = conversationHistory.slice(-7).map(entry => 
+    let historyContext = context.conversationHistory.slice(-7).map(entry => 
         `${entry.speaker}: "${entry.message}"`
     ).join('\n');
 
@@ -156,7 +146,6 @@ const getSingleAiResponsePrompt = (transcribedText, context, conversationHistory
         3.  **UNCLEAR/QUESTION**: (e.g., "what?", "how much?", "maybe", or garbled audio).
         `;
     } else {
-        // Covers ASKING_TIME, HANDLING_QUESTION, CLARIFYING_TIME
         taskInstruction = `
         Task: You are in a phone call to schedule an appointment with a provider.
         The provider just said: "${transcribedText}"
@@ -212,76 +201,19 @@ Return a single, valid JSON object with this *exact* structure. Do NOT add markd
 `;
 }
 
-// Helper functions for conversation management (Unchanged)
-async function getConversationHistory(appointmentId) {
-    try {
-        const appointmentRef = await getAppointmentRef(appointmentId);
-        const appointment = (await appointmentRef.get()).data();
-        return appointment.conversationHistory || [];
-    } catch (error) {
-        console.log(`[WARNING] Could not get conversation history for ${appointmentId}: ${error.message}`);
-        return [];
-    }
-}
-
-async function addToConversationHistory(appointmentId, speaker, message, metadata = {}) {
-    try {
-        const appointmentRef = await getAppointmentRef(appointmentId);
-        const timestamp = new Date().toISOString();
-        const historyEntry = {
-            speaker,
-            message: message.substring(0, 500),
-            timestamp,
-            ...metadata
-        };
-        
-        await appointmentRef.update({
-            conversationHistory: admin.firestore.FieldValue.arrayUnion(historyEntry),
-            lastActivity: timestamp
-        });
-    } catch (error) {
-        console.error(`[ERROR] Failed to add conversation history for ${appointmentId}: ${error.message}`);
-        throw error; // Throw error so .catch(logDBError) can see it
-    }
-}
-
-async function updateConversationState(appointmentId, newState, metadata = {}) {
-    try {
-        const appointmentRef = await getAppointmentRef(appointmentId);
-        await appointmentRef.update({
-            conversationState: newState,
-            lastStateChange: new Date().toISOString(),
-            ...metadata
-        });
-    } catch (error) {
-        console.error(`[ERROR] Failed to update conversation state for ${appointmentId}: ${error.message}`);
-        throw error; // Throw error so .catch(logDBError) can see it
-    }
-}
-
 async function getAppointmentRef(appointmentId) {
-    try {
-        const snapshot = await db.collectionGroup('appointments').get();
-        const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
-        
-        if (!foundDoc) {
-            console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}.`);
-            throw new Error(`Could not find appointment ${appointmentId}`);
-        }
-        return foundDoc.ref;
-    } catch (error)
-    {
-        console.error(`[ERROR] getAppointmentRef: Database error for ${appointmentId}: ${error.message}`);
-        throw error;
+    const snapshot = await db.collectionGroup('appointments').get();
+    const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
+    
+    if (!foundDoc) {
+        throw new Error(`Could not find appointment ${appointmentId}`);
     }
+    return foundDoc.ref;
 }
 
-// *** This is the function you are asking for ***
-// It sends the confirmation push notification, just like your reminderService.
-async function sendAppointmentBookingNotification(appointment, confirmedTime, appointmentId) { // *** FIX: Added appointmentId ***
+async function sendAppointmentBookingNotification(appointment, confirmedTime, appointmentId) {
     try {
         if (!appointment.userId) {
-            console.warn(`[WARNING] Cannot send notification: appointment missing userId`);
             return false;
         }
 
@@ -289,7 +221,6 @@ async function sendAppointmentBookingNotification(appointment, confirmedTime, ap
         const userDoc = await userRef.get();
 
         if (!userDoc.exists || !userDoc.data().fcmToken) {
-            console.warn(`User ${appointment.userId} does not have an FCM token. Skipping notification.`);
             return false;
         }
 
@@ -314,7 +245,6 @@ Make it friendly and reassuring.`;
         try {
             notificationBody = await generateGeminiText(prompt);
         } catch (geminiError) {
-            console.warn(`[WARNING] Gemini failed for notification message: ${geminiError.message}`);
             notificationBody = `Your appointment for ${cleanUserName} is confirmed for ${new Date(confirmedTime).toLocaleString('en-US', { 
                 weekday: 'long', 
                 month: 'short',
@@ -332,7 +262,7 @@ Make it friendly and reassuring.`;
             },
             token: fcmToken,
             data: {
-                appointmentId: appointmentId || '', // *** FIX: Use passed-in appointmentId ***
+                appointmentId: appointmentId || '',
                 userId: appointment.userId || '',
                 type: 'appointment_confirmed',
                 confirmedTime: confirmedTime
@@ -340,20 +270,14 @@ Make it friendly and reassuring.`;
         };
 
         const response = await admin.messaging().send(message);
-        console.log(`[INFO] Successfully sent appointment confirmation notification:`, response);
         return true;
 
     } catch (error) {
-        console.error(`[ERROR] Failed to send appointment booking notification:`, error);
-        
-        // This error handling is copied from your reminderService
         if (error.code === 'messaging/registration-token-not-registered') {
-            console.warn(`FCM token not registered for user ${appointment.userId}. Removing token from user profile.`);
             try {
                 await db.collection('users').doc(appointment.userId).set({ fcmToken: null }, { merge: true });
-                console.log(`Removed invalid Fcm token for user ${appointment.userId}`);
             } catch (removeError) {
-                console.error(`Failed to remove invalid Fcm token for user ${appointment.userId}:`, removeError);
+                // Silent fail
             }
         }
         
@@ -361,15 +285,11 @@ Make it friendly and reassuring.`;
     }
 }
 
-// Safe JSON parsing (Unchanged)
 function safeJsonParse(jsonString, context = '') {
     try {
         const cleanedJson = jsonString.replace(/^```json\s*|```\s*$/g, '').trim();
         return JSON.parse(cleanedJson);
     } catch (error) {
-        console.error(`[ERROR] JSON parsing failed in ${context}:`, error.message);
-        console.error(`[ERROR] Raw response:`, jsonString);
-        
         return {
             responseText: "I'm sorry, I had a brief issue. Could you say that again?",
             nextState: CONVERSATION_STATES.CLARIFYING_TIME,
@@ -379,20 +299,33 @@ function safeJsonParse(jsonString, context = '') {
     }
 }
 
-// *** UPDATED: initiateAppointmentFlow ***
+async function saveFinalConversationData(appointmentId, context) {
+    try {
+        const appointmentRef = await getAppointmentRef(appointmentId);
+        await appointmentRef.update({
+            conversationHistory: context.conversationHistory,
+            conversationState: context.currentState,
+            retries: context.retries,
+            confirmationRetries: context.confirmationRetries,
+            confirmationClarifications: context.confirmationClarifications,
+            lastActivity: new Date().toISOString(),
+            callEndTime: new Date().toISOString()
+        });
+    } catch (error) {
+        // Silent fail
+    }
+}
+
 export async function initiateAppointmentFlow(appointmentId) {
-    console.log(`[INFO] initiateAppointmentFlow: Starting for appointmentId: ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
     
     try {
         const appointmentRef = await getAppointmentRef(appointmentId);
         const appointment = (await appointmentRef.get()).data();
         
-        // Create conversation context
         const context = new ConversationContext(appointment);
         conversationContexts.set(appointmentId, context);
         
-        // *** FIX: This first update IS critical to clear history, so we 'await' it. ***
         await appointmentRef.update({ 
             retries: 0,
             conversationState: CONVERSATION_STATES.INITIAL_GREETING,
@@ -401,7 +334,6 @@ export async function initiateAppointmentFlow(appointmentId) {
             lastActivity: new Date().toISOString()
         });
 
-        // Generate a dynamic, personalized greeting
         const greetingPrompt = `You are an AI assistant named Sarah from Aiva Health. Generate a warm, natural phone greeting.
 
 Context:
@@ -419,18 +351,14 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
 
         let greeting;
         try {
-            // *** This is the first main 'await' (Gemini) ***
             greeting = await generateGeminiText(greetingPrompt);
         } catch (error) {
-            // Updated fallback greeting to match the new context
             greeting = `Hi! This is Sarah from Aiva Health. I'm calling on behalf of ${context.userName} regarding ${context.reason}. I was wondering, what time would work best for you?`;
         }
 
-        // *** FIX: "Fire and Forget" logging. We don't 'await' these. ***
-        addToConversationHistory(appointmentId, 'assistant', greeting).catch(logDBError);
-        updateConversationState(appointmentId, CONVERSATION_STATES.ASKING_TIME).catch(logDBError);
+        context.addToHistory('assistant', greeting);
+        context.currentState = CONVERSATION_STATES.ASKING_TIME;
 
-        // Try to generate ElevenLabs audio for better quality
         const audioUrl = await generateAndCacheSpeech(greeting, appointmentId);
         
         const gather = twiml.gather({
@@ -444,7 +372,6 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
             hints: 'tomorrow, next week, Monday, Tuesday, Wednesday, Thursday, Friday, morning, afternoon, evening'
         });
         
-        // Use ElevenLabs audio if available, otherwise use Twilio TTS
         if (audioUrl) {
             gather.play(audioUrl);
         } else {
@@ -455,14 +382,15 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
         
         return twiml;
     } catch (error) {
-        console.error(`[ERROR] initiateAppointmentFlow: Failed for ${appointmentId}. Error: ${error.message}`, error.stack);
-        
         try {
-            // *** FIX: Log failure without 'await' ***
-            addToConversationHistory(appointmentId, 'system', `Call initialization failed: ${error.message}`, { error: true }).catch(logDBError);
-            updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { failureReason: `Initialization error: ${error.message}` }).catch(logDBError);
+            const context = conversationContexts.get(appointmentId);
+            if (context) {
+                context.addToHistory('system', `Call initialization failed: ${error.message}`, { error: true });
+                context.currentState = CONVERSATION_STATES.FAILED;
+                await saveFinalConversationData(appointmentId, context);
+            }
         } catch (logError) {
-            console.error(`[ERROR] Could not log initialization failure: ${logError.message}`);
+            // Silent fail
         }
         
         const initErrorMessage = "Oh, I'm having a technical issue on my end. Someone from our team will call you back shortly. Sorry about that!";
@@ -477,29 +405,21 @@ Example: "Hi there, this is Sarah from Aiva Health. I'm calling on behalf of ${c
     }
 }
 
-// *** UPDATED: handleAppointmentResponse ***
 export async function handleAppointmentResponse(appointmentId, transcribedText, timedOut) {
-    console.log(`[INFO] handleAppointmentResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
     
     try {
         const appointmentRef = await getAppointmentRef(appointmentId);
         const appointment = (await appointmentRef.get()).data();
-        const conversationHistory = await getConversationHistory(appointmentId);
-        let currentState = appointment.conversationState || CONVERSATION_STATES.ASKING_TIME;
         const context = conversationContexts.get(appointmentId) || new ConversationContext(appointment);
 
-        // Handle timeout
         if (timedOut) {
-            // *** FIX: "Fire and Forget" logging ***
-            addToConversationHistory(appointmentId, 'system', 'User did not respond (timeout)', { timeout: true }).catch(logDBError);
-            return await handleTimeout(appointmentId, appointment, twiml, 'general');
+            context.addToHistory('system', 'User did not respond (timeout)', { timeout: true });
+            return await handleTimeout(appointmentId, context, twiml, 'general');
         }
 
-        // Validate transcription
         if (!transcribedText || transcribedText.trim().length === 0) {
-            // *** FIX: "Fire and Forget" logging ***
-            addToConversationHistory(appointmentId, 'user', '[no audio detected]', { silent: true }).catch(logDBError);
+            context.addToHistory('user', '[no audio detected]', { silent: true });
             const clarificationMessage = "I couldn't quite hear that. Could you tell me when you'd like to schedule?";
             const audioUrl = await generateAndCacheSpeech(clarificationMessage, appointmentId);
             
@@ -520,65 +440,42 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
             return twiml;
         }
 
-        // Log user response
-        // *** FIX: "Fire and Forget" logging ***
-        addToConversationHistory(appointmentId, 'user', transcribedText).catch(logDBError);
+        context.addToHistory('user', transcribedText);
 
-
+        let currentState = context.currentState;
         if (currentState === CONVERSATION_STATES.CONFIRMING_TIME) {
             currentState = CONVERSATION_STATES.ASKING_TIME;
         }
 
-        const aiPrompt = getSingleAiResponsePrompt(
-            transcribedText, 
-            context,
-            conversationHistory,
-            currentState
-        );
+        const aiPrompt = getSingleAiResponsePrompt(transcribedText, context, currentState);
 
-        // *** This is now the MAIN pause the user will feel (Gemini) ***
         let aiResponseRaw;
         try {
             aiResponseRaw = await generateGeminiText(aiPrompt);
         } catch (geminiError) {
-            console.error(`[ERROR] Gemini single-call failed:`, geminiError.message);
             aiResponseRaw = JSON.stringify({
                 responseText: "I'm sorry, I'm having a little trouble. What time were you thinking?",
-                nextState: "clarifying_time", // <--Ensure lowercase
+                nextState: "clarifying_time",
                 extractedTimeISO: null,
                 analysisSummary: "Gemini API error"
             });
         }
 
         const aiResult = safeJsonParse(aiResponseRaw, 'handleAppointmentResponse');
-        console.log(`[INFO] AI Result for ${appointmentId}:`, aiResult);
-
-        // *** FIX: Normalize the nextState to lowercase to match CONVERSATION_STATES object ***
         const nextState = (aiResult.nextState || 'clarifying_time').toLowerCase();
 
-        // Log AI response and analysis
-        // *** FIX: "Fire and Forget" logging ***
-        addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
+        context.addToHistory('assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
             nextState: nextState
-        }).catch(logDBError);
+        });
 
-        // Update context based on AI
         if (nextState === CONVERSATION_STATES.ASKING_TIME) {
             context.addRejectedTime(transcribedText); 
         }
 
-        // --- ACT ON AI RESPONSE ---
-        
-        // Update state in Firestore
-        // *** FIX: "Fire and Forget" state update ***
-        updateConversationState(appointmentId, nextState, { // <-- Use normalized state
-            lastAnalysis: aiResult.analysisSummary,
-            suggestedTime: aiResult.extractedTimeISO 
-        }).catch(logDBError);
+        context.currentState = nextState;
 
-        // Handle the next step based on the state AI determined
-        switch (nextState) { // <-- Use normalized state
+        switch (nextState) {
             
             case CONVERSATION_STATES.CONFIRMING_TIME:
                 const confirmationUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(aiResult.extractedTimeISO)}`;
@@ -601,7 +498,6 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                 break;
 
             case CONVERSATION_STATES.COMPLETED:
-                // This state should be handled by handleConfirmationResponse, but as a fallback:
                 const audioCompleted = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 if (audioCompleted) {
                     twiml.play(audioCompleted);
@@ -609,6 +505,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                     twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
                 }
                 twiml.hangup();
+                await saveFinalConversationData(appointmentId, context);
                 break;
 
             case CONVERSATION_STATES.FAILED:
@@ -619,6 +516,7 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
                     twiml.say({ voice: 'Polly.Joanna', rate: '95%' }, aiResult.responseText);
                 }
                 twiml.hangup();
+                await saveFinalConversationData(appointmentId, context);
                 break;
 
             case CONVERSATION_STATES.ASKING_TIME:
@@ -646,32 +544,27 @@ export async function handleAppointmentResponse(appointmentId, transcribedText, 
         return twiml;
 
     } catch (error) {
-        console.error(`[ERROR] handleAppointmentResponse: Critical error for ${appointmentId}:`, error.message, error.stack);
-        await handleCriticalError(appointmentId, error, twiml); // *** Keep await here ***
+        await handleCriticalError(appointmentId, error, twiml);
         return twiml;
     }
 }
 
 // *** UPDATED: handleConfirmationResponse ***
 export async function handleConfirmationResponse(appointmentId, transcribedText, timeToConfirmISO, timedOut) {
-    console.log(`[INFO] handleConfirmationResponse: Starting for ${appointmentId}`);
     const twiml = new twilio.twiml.VoiceResponse();
     
     try {
         const appointmentRef = await getAppointmentRef(appointmentId);
         const appointment = (await appointmentRef.get()).data();
-        const conversationHistory = await getConversationHistory(appointmentId);
         const context = conversationContexts.get(appointmentId) || new ConversationContext(appointment);
 
         if (timedOut) {
-            // *** FIX: "Fire and Forget" logging ***
-            addToConversationHistory(appointmentId, 'system', 'Confirmation timeout', { timeout: true }).catch(logDBError);
-            return await handleTimeout(appointmentId, appointment, twiml, 'confirmation', timeToConfirmISO);
+            context.addToHistory('system', 'Confirmation timeout', { timeout: true });
+            return await handleTimeout(appointmentId, context, twiml, 'confirmation', timeToConfirmISO);
         }
 
         if (!transcribedText || transcribedText.trim().length === 0) {
-            // *** FIX: "Fire and Forget" logging ***
-            addToConversationHistory(appointmentId, 'user', '[no audio in confirmation]', { silent: true }).catch(logDBError);
+            context.addToHistory('user', '[no audio in confirmation]', { silent: true });
             const formattedTime = new Date(timeToConfirmISO).toLocaleString('en-US', { timeStyle: 'short', dateStyle: 'medium' });
             const clarifyMessage = `I didn't catch that. For ${formattedTime}, is that a yes?`;
             const audioClarify = await generateAndCacheSpeech(clarifyMessage, appointmentId);
@@ -688,59 +581,35 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
             return twiml;
         }
 
-        // *** FIX: "Fire and Forget" logging ***
-        addToConversationHistory(appointmentId, 'user', transcribedText, { confirmationResponse: true }).catch(logDBError);
+        context.addToHistory('user', transcribedText, { confirmationResponse: true });
 
-        const aiPrompt = getSingleAiResponsePrompt(
-            transcribedText, 
-            context,
-            conversationHistory,
-            CONVERSATION_STATES.CONFIRMING_TIME, 
-            timeToConfirmISO
-        );
+        const aiPrompt = getSingleAiResponsePrompt(transcribedText, context, CONVERSATION_STATES.CONFIRMING_TIME, timeToConfirmISO);
 
-        // *** This is the MAIN pause (Gemini) ***
         let aiResponseRaw;
         try {
             aiResponseRaw = await generateGeminiText(aiPrompt);
         } catch (geminiError) {
-            console.error(`[ERROR] Gemini confirmation-call failed:`, geminiError.message);
             aiResponseRaw = JSON.stringify({
                 responseText: "I'm sorry, I had a brief issue. Could you confirm that time again?",
-                nextState: "confirming_time", // <-- Ensure lowercase
+                nextState: "confirming_time",
                 extractedTimeISO: timeToConfirmISO,
                 analysisSummary: "Gemini API error"
             });
         }
         
         const aiResult = safeJsonParse(aiResponseRaw, 'handleConfirmationResponse');
-        console.log(`[INFO] AI Confirmation Result for ${appointmentId}:`, aiResult);
-
-        // *** FIX: Normalize the nextState to lowercase to match CONVERSATION_STATES object ***
         const nextState = (aiResult.nextState || 'confirming_time').toLowerCase();
 
-        // Log AI response
-        // *** FIX: "Fire and Forget" logging ***
-        addToConversationHistory(appointmentId, 'assistant', aiResult.responseText, { 
+        context.addToHistory('assistant', aiResult.responseText, { 
             aiAnalysis: aiResult.analysisSummary,
             nextState: nextState
-        }).catch(logDBError);
+        });
         
-        // --- ACT ON AI RESPONSE ---
-        
-        // Update state in Firestore
-        // *** FIX: Only "Fire and Forget" update if NOT completed ***
-        if (nextState !== CONVERSATION_STATES.COMPLETED) {
-            updateConversationState(appointmentId, nextState, { // <-- Use normalized state
-                lastAnalysis: aiResult.analysisSummary
-            }).catch(logDBError);
-        }
+        context.currentState = nextState;
 
-
-        switch (nextState) { // <-- Use normalized state
+        switch (nextState) {
 
             case CONVERSATION_STATES.COMPLETED:
-                // SUCCESS! AI confirmed the time.
                 const audioSuccess = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 if (audioSuccess) {
                     twiml.play(audioSuccess);
@@ -749,22 +618,19 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 }
                 twiml.hangup();
                 
-                // *** CRITICAL: We MUST 'await' these final writes. ***
-                // This ensures the appointment is confirmed before the function ends.
-                // The user is hearing the goodbye, so this delay is acceptable.
-                await updateConversationState(appointmentId, CONVERSATION_STATES.COMPLETED, {
+                await appointmentRef.update({
+                    conversationState: CONVERSATION_STATES.COMPLETED,
                     finalAppointmentTime: timeToConfirmISO,
                     confirmedAt: new Date().toISOString()
                 });
                 
-                // *** CRITICAL: We 'await' this to ensure notification is sent. ***
+                await saveFinalConversationData(appointmentId, context);
                 await sendAppointmentBookingNotification(appointment, timeToConfirmISO, appointmentId);
                 break;
             
             case CONVERSATION_STATES.ASKING_TIME:
             case CONVERSATION_STATES.HANDLING_QUESTION:
             case CONVERSATION_STATES.CLARIFYING_TIME:
-                // AI detected a "no" or a new question. Send them back to the main loop.
                 context.addRejectedTime(new Date(timeToConfirmISO).toLocaleString());
                 const audioRetry = await generateAndCacheSpeech(aiResult.responseText, appointmentId);
                 
@@ -785,15 +651,9 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                 
             case CONVERSATION_STATES.CONFIRMING_TIME:
             default:
-                // AI was unclear. Ask for confirmation again.
-                const clarificationAttempts = (appointment.confirmationClarifications || 0) + 1;
-                
-                // *** FIX: "Fire and Forget" this update ***
-                getAppointmentRef(appointmentId)
-                    .then(ref => ref.update({ confirmationClarifications: clarificationAttempts }))
-                    .catch(logDBError);
+                context.confirmationClarifications++;
 
-                if (clarificationAttempts >= 2) {
+                if (context.confirmationClarifications >= 2) {
                     const escalateMessage = "I'm having trouble understanding. Let me have someone call you back to finalize this. Thanks!";
                     const audioEscalate = await generateAndCacheSpeech(escalateMessage, appointmentId);
                     if (audioEscalate) {
@@ -803,8 +663,10 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
                     }
                     twiml.hangup();
                     
-                    // *** CRITICAL: 'await' this final failure state ***
-                    await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
+                    context.currentState = CONVERSATION_STATES.FAILED;
+                    await saveFinalConversationData(appointmentId, context);
+                    await appointmentRef.update({
+                        conversationState: CONVERSATION_STATES.FAILED,
                         failureReason: 'Unable to get clear confirmation',
                         suggestedTime: timeToConfirmISO
                     });
@@ -824,31 +686,28 @@ export async function handleConfirmationResponse(appointmentId, transcribedText,
         
         return twiml;
     } catch (error) {
-        console.error(`[ERROR] handleConfirmationResponse: Critical error for ${appointmentId}:`, error.message);
-        await handleCriticalError(appointmentId, error, twiml); // *** Keep await here ***
+        await handleCriticalError(appointmentId, error, twiml);
         return twiml;
     }
 }
 
-// *** UPDATED: Centralized Error/Timeout Handlers ***
-async function handleTimeout(appointmentId, appointment, twiml, context, timeToConfirmISO = null) {
+async function handleTimeout(appointmentId, context, twiml, timeoutType, timeToConfirmISO = null) {
     let retries;
     let maxRetries;
-    let stateToUpdate;
     let gatherActionUrl;
     let retryMessage;
 
-    if (context === 'confirmation') {
-        retries = (appointment.confirmationRetries || 0) + 1;
+    if (timeoutType === 'confirmation') {
+        retries = context.confirmationRetries + 1;
+        context.confirmationRetries = retries;
         maxRetries = 2;
-        stateToUpdate = 'confirmationRetries';
         gatherActionUrl = `/api/twilio/twiML/handleConfirmation?appointmentId=${appointmentId}&timeToConfirm=${encodeURIComponent(timeToConfirmISO)}`;
         const formattedTime = new Date(timeToConfirmISO).toLocaleString('en-US', { timeStyle: 'short', dateStyle: 'medium' });
         retryMessage = `Sorry, I didn't hear anything. Just to confirm, did ${formattedTime} work for you?`;
-    } else { // 'general'
-        retries = (appointment.retries || 0) + 1;
+    } else {
+        retries = context.retries + 1;
+        context.retries = retries;
         maxRetries = MAX_RETRIES;
-        stateToUpdate = 'retries';
         gatherActionUrl = `/api/twilio/twiML/handleRecording?appointmentId=${appointmentId}`;
         retryMessage = "Sorry, I didn't catch that. When would be a good time for you?";
     }
@@ -863,17 +722,16 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
         }
         twiml.hangup();
         
-        // *** CRITICAL: 'await' this final failure state ***
-        await updateConversationState(appointmentId, CONVERSATION_STATES.FAILED, { 
-            failureReason: `Multiple timeouts (${context})`,
-            finalRetries: retries 
+        context.currentState = CONVERSATION_STATES.FAILED;
+        await saveFinalConversationData(appointmentId, context);
+        
+        const appointmentRef = await getAppointmentRef(appointmentId);
+        await appointmentRef.update({
+            conversationState: CONVERSATION_STATES.FAILED,
+            failureReason: `Multiple timeouts (${timeoutType})`,
+            finalRetries: retries
         });
     } else {
-        // *** FIX: "Fire and Forget" the retry count update ***
-        getAppointmentRef(appointmentId)
-            .then(ref => ref.update({ [stateToUpdate]: retries }))
-            .catch(logDBError);
-            
         const audioRetry = await generateAndCacheSpeech(retryMessage, appointmentId);
         const gather = twiml.gather({
             input: 'speech',
@@ -891,12 +749,13 @@ async function handleTimeout(appointmentId, appointment, twiml, context, timeToC
 }
 
 async function handleCriticalError(appointmentId, error, twiml) {
-    try {
-        // *** CRITICAL: 'await' this to ensure error is logged ***
-        await addToConversationHistory(appointmentId, 'system', `Critical error: ${error.message}`, { error: true, critical: true });
-    } catch (logError) {
-        console.error(`[ERROR] Could not log critical error: ${logError.message}`);
+    const context = conversationContexts.get(appointmentId);
+    if (context) {
+        context.addToHistory('system', `Critical error: ${error.message}`, { error: true, critical: true });
+        context.currentState = CONVERSATION_STATES.FAILED;
+        await saveFinalConversationData(appointmentId, context);
     }
+    
     const errorMessage = "I'm so sorry, I'm having technical difficulties. Someone from our team will call you back very soon. Thank you for your patience!";
     const audioError = await generateAndCacheSpeech(errorMessage, appointmentId);
     if (audioError) {
@@ -907,33 +766,26 @@ async function handleCriticalError(appointmentId, error, twiml) {
     twiml.hangup();
 }
 
-// *** UNCHANGED: updateCallStatus ***
-// This function is called by Twilio's status webhook, not during the live
-// TwiML exchange. Its latency does not impact the user, so 'await' is fine.
 export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
     if (!appointmentId) return;
-    
-    console.log(`[INFO] updateCallStatus: ${appointmentId} - Status: ${callStatus || 'undefined'}, AnsweredBy: ${answeredBy || 'undefined'}`);
     
     try {
         const appointmentRef = await getAppointmentRef(appointmentId);
         const currentDoc = await appointmentRef.get();
         
         if (!currentDoc.exists) {
-            console.error(`[ERROR] updateCallStatus: Appointment ${appointmentId} not found`);
             return;
         }
         
         const appointment = currentDoc.data();
         const currentState = appointment.conversationState;
+        const context = conversationContexts.get(appointmentId);
         
-        // *** FIX: Only include lastCallStatus if callStatus is defined ***
         let updatePayload = {};
         if (callStatus && callStatus !== 'undefined') {
             updatePayload.lastCallStatus = callStatus;
         }
 
-        // Handle different call statuses
         if (answeredBy && answeredBy === 'machine_start') {
             updatePayload = { 
                 ...updatePayload,
@@ -941,20 +793,23 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                 failureReason: 'Call answered by voicemail/answering machine.',
                 conversationState: CONVERSATION_STATES.FAILED
             };
-            await addToConversationHistory(appointmentId, 'system', 'Call answered by voicemail', { voicemail: true });
+            if (context) {
+                context.addToHistory('system', 'Call answered by voicemail', { voicemail: true });
+                await saveFinalConversationData(appointmentId, context);
+            }
             
         } else if (answeredBy === 'human' && !callStatus) {
-            // *** FIX: Handle case where call is answered by human but status is undefined ***
-            // This often happens with streaming calls where the WebSocket connection is active
             updatePayload = { 
                 ...updatePayload,
                 callAnsweredAt: new Date().toISOString(),
                 callInProgress: true
             };
-            await addToConversationHistory(appointmentId, 'system', 'Call answered by human - streaming active', { 
-                answered: true, 
-                streaming: true 
-            });
+            if (context) {
+                context.addToHistory('system', 'Call answered by human - streaming active', { 
+                    answered: true, 
+                    streaming: true 
+                });
+            }
             
         } else if (callStatus === 'busy') {
             updatePayload = { 
@@ -963,7 +818,10 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                 failureReason: 'Phone line was busy.',
                 conversationState: CONVERSATION_STATES.FAILED
             };
-            await addToConversationHistory(appointmentId, 'system', 'Phone line busy', { busy: true });
+            if (context) {
+                context.addToHistory('system', 'Phone line busy', { busy: true });
+                await saveFinalConversationData(appointmentId, context);
+            }
             
         } else if (callStatus === 'no-answer') {
             updatePayload = { 
@@ -972,7 +830,10 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                 failureReason: 'No one answered the phone.',
                 conversationState: CONVERSATION_STATES.FAILED
             };
-            await addToConversationHistory(appointmentId, 'system', 'No answer', { noAnswer: true });
+            if (context) {
+                context.addToHistory('system', 'No answer', { noAnswer: true });
+                await saveFinalConversationData(appointmentId, context);
+            }
             
         } else if (callStatus === 'failed') {
             updatePayload = { 
@@ -981,10 +842,12 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                 failureReason: 'Call failed to connect.',
                 conversationState: CONVERSATION_STATES.FAILED
             };
-            await addToConversationHistory(appointmentId, 'system', 'Call failed to connect', { callFailed: true });
+            if (context) {
+                context.addToHistory('system', 'Call failed to connect', { callFailed: true });
+                await saveFinalConversationData(appointmentId, context);
+            }
             
         } else if (callStatus === 'completed') {
-            // Only mark as failed if not already completed
             if (currentState !== CONVERSATION_STATES.COMPLETED) {
                 if (currentState === CONVERSATION_STATES.CALLING || 
                     currentState === CONVERSATION_STATES.INITIAL_GREETING ||
@@ -996,44 +859,33 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                         failureReason: 'Call ended without completing appointment.',
                         conversationState: CONVERSATION_STATES.FAILED
                     };
-                    await addToConversationHistory(appointmentId, 'system', 'Call ended unexpectedly', { unexpectedEnd: true });
+                    if (context) {
+                        context.addToHistory('system', 'Call ended unexpectedly', { unexpectedEnd: true });
+                        await saveFinalConversationData(appointmentId, context);
+                    }
                 }
+            } else if (context) {
+                await saveFinalConversationData(appointmentId, context);
             }
             
         } else if (callStatus === 'in-progress') {
             updatePayload = { 
                 ...updatePayload,
-                // conversationState: CONVERSATION_STATES.INITIAL_GREETING, // This is set in initiateFlow
                 callInProgress: true,
                 callAnsweredAt: new Date().toISOString()
             };
-            await addToConversationHistory(appointmentId, 'system', 'Call answered and in progress', { callAnswered: true });
+            if (context) {
+                context.addToHistory('system', 'Call answered and in progress', { callAnswered: true });
+            }
         }
         
-        // Update if we have meaningful changes
         if (Object.keys(updatePayload).length > 0) {
-            console.log(`[INFO] updateCallStatus: Updating appointment ${appointmentId}:`, updatePayload);
             await appointmentRef.update(updatePayload);
         } else if (callStatus && callStatus !== 'undefined') {
-            // Only update lastCallStatus if we have a valid status
-            console.log(`[INFO] updateCallStatus: Updating lastCallStatus for ${appointmentId}: ${callStatus}`);
             await appointmentRef.update({ lastCallStatus: callStatus });
-        } else {
-            console.log(`[INFO] updateCallStatus: No valid updates for ${appointmentId} - callStatus: ${callStatus}, answeredBy: ${answeredBy}`);
         }
         
     } catch (error) {
-        console.error(`[ERROR] updateCallStatus: Could not update status for ${appointmentId}. Error: ${error.message}`);
-        
-        try {
-            // *** FIX: Only include defined values in metadata ***
-            const metadata = { error: true };
-            if (callStatus) metadata.callStatus = callStatus;
-            if (answeredBy) metadata.answeredBy = answeredBy;
-            
-            await addToConversationHistory(appointmentId, 'system', `Call status update failed: ${error.message}`, metadata);
-        } catch (logError) {
-            console.error(`[ERROR] Could not log call status error: ${logError.message}`);
-        }
+        // Silent fail
     }
 }
