@@ -20,7 +20,8 @@ import path from 'path';
 async function mulawBufferToWavBuffer(mulawBuffer) {
     return new Promise((resolve, reject) => {
         try {
-            const ff = spawn('ffmpeg', [
+            // Use ffmpegStatic path instead of 'ffmpeg' command
+            const ff = spawn(ffmpegStatic, [
                 '-f', 'mulaw',
                 '-ar', '8000',
                 '-ac', '1',
