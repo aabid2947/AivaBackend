@@ -55,9 +55,10 @@ export function setupTwilioStreamRoutes(app) {
                 url: webSocketUrl, 
             });
 
-            // Add a pause to keep the call alive while the WebSocket connects
+            // Add a pause to keep the call alive while the WebSocket handles the conversation
             // This prevents the call from dropping immediately.
-            twiml.pause({ length: 20 }); 
+            // Increased to 60 seconds to allow for longer conversations
+            twiml.pause({ length: 60 }); 
 
             res.type('text/xml');
             res.send(twiml.toString());

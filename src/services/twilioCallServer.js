@@ -497,9 +497,18 @@ export function setupWebSocketServer(server) {
                     console.log(`[TTS] Mulaw stream ended. Waiting for buffer to drain...`);
                     console.log(`[TTS] Buffer remaining: ${audioBuffer.length} bytes`);
                     
+                    let checkCount = 0;
                     // Wait for pacing to finish sending remaining audio
                     const waitForBuffer = setInterval(() => {
+                        checkCount++;
+                        
+                        // Log buffer status every 10 checks (every 500ms)
+                        if (checkCount % 10 === 0) {
+                            console.log(`[TTS] Buffer drain check ${checkCount}: ${audioBuffer.length} bytes remaining, activeStreams.has(${streamId})=${activeStreams.has(streamId)}`);
+                        }
+                        
                         if (audioBuffer.length === 0 || !activeStreams.has(streamId)) {
+                            console.log(`[TTS] Buffer drain complete! Final check: buffer=${audioBuffer.length}, activeStream=${activeStreams.has(streamId)}`);
                             clearInterval(waitForBuffer);
                             if (pacingInterval) {
                                 clearInterval(pacingInterval);
@@ -541,8 +550,14 @@ export function setupWebSocketServer(server) {
                             }
                             console.log(`[STT] 🎤 NOW LISTENING FOR USER INPUT`);
                             console.log(`[STT] ========================================`);
+                            
+                            // Send a clear event to Twilio to reset any buffering
+                            if (ws.readyState === 1) {
+                                ws.send(JSON.stringify({ event: 'clear', streamSid: streamSid }));
+                                console.log(`[TTS] Sent clear event to Twilio`);
+                            }
                         }
-                    }, 100); // Check every 100ms
+                    }, 50); // Check every 50ms for faster response
                 });
 
                 mulawStream.on('error', (error) => {
