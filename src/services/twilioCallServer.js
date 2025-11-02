@@ -4,7 +4,7 @@ import { SpeechClient } from '@google-cloud/speech';
 import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
 import { generateChatgptText, generateChatgptTextStream } from '../utils/chatgptClient.js';
-import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
+import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsStreamClient.js';
 import { db, admin } from '../config/firebaseAdmin.js';
 import ffmpegStatic from 'ffmpeg-static';
 
