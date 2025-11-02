@@ -371,6 +371,21 @@ export function setupWebSocketServer(server) {
                 case 'start':
                     console.log(`[INFO] Twilio stream started for ${appointmentId}.`);
                     
+                    // Update appointment status to indicate streaming has started
+                    (async () => {
+                        try {
+                            const appointmentRef = await getAppointmentRef(appointmentId);
+                            await appointmentRef.update({
+                                callInProgress: true,
+                                streamStartedAt: new Date().toISOString(),
+                                lastActivity: new Date().toISOString()
+                            });
+                            console.log(`[INFO] Updated appointment ${appointmentId} - streaming started`);
+                        } catch (error) {
+                            console.error(`[ERROR] Failed to update appointment status for ${appointmentId}:`, error);
+                        }
+                    })();
+                    
                     // Initialize STT stream
                     initializeSttStream();
                     
@@ -417,7 +432,23 @@ export function setupWebSocketServer(server) {
                     break;
 
                 case 'stop':
-                    console.log(`[INFO] Twilio stream stopped.`);
+                    console.log(`[INFO] Twilio stream stopped for ${appointmentId}.`);
+                    
+                    // Update appointment status to indicate streaming has ended
+                    (async () => {
+                        try {
+                            const appointmentRef = await getAppointmentRef(appointmentId);
+                            await appointmentRef.update({
+                                callInProgress: false,
+                                streamEndedAt: new Date().toISOString(),
+                                lastActivity: new Date().toISOString()
+                            });
+                            console.log(`[INFO] Updated appointment ${appointmentId} - streaming ended`);
+                        } catch (error) {
+                            console.error(`[ERROR] Failed to update appointment status on stop for ${appointmentId}:`, error);
+                        }
+                    })();
+                    
                     // Clean up STT stream
                     if (sttStream) {
                         sttStream.destroy();
@@ -441,7 +472,23 @@ export function setupWebSocketServer(server) {
         });
 
         ws.on('close', (code, reason) => {
-            console.log(`[INFO] WebSocket closed: ${code} ${reason.toString()}`);
+            console.log(`[INFO] WebSocket closed for ${appointmentId}: ${code} ${reason.toString()}`);
+            
+            // Update appointment status when WebSocket closes
+            (async () => {
+                try {
+                    const appointmentRef = await getAppointmentRef(appointmentId);
+                    await appointmentRef.update({
+                        callInProgress: false,
+                        streamEndedAt: new Date().toISOString(),
+                        lastActivity: new Date().toISOString()
+                    });
+                    console.log(`[INFO] Updated appointment ${appointmentId} - WebSocket closed`);
+                } catch (error) {
+                    console.error(`[ERROR] Failed to update appointment on WebSocket close for ${appointmentId}:`, error);
+                }
+            })();
+            
             // Clean up STT stream
             if (sttStream) {
                 sttStream.destroy();
@@ -451,7 +498,23 @@ export function setupWebSocketServer(server) {
         });
 
         ws.on('error', (error) => {
-            console.error('[ERROR] WebSocket error:', error);
+            console.error(`[ERROR] WebSocket error for ${appointmentId}:`, error);
+            
+            // Update appointment status on WebSocket error
+            (async () => {
+                try {
+                    const appointmentRef = await getAppointmentRef(appointmentId);
+                    await appointmentRef.update({
+                        callInProgress: false,
+                        streamError: error.message,
+                        lastActivity: new Date().toISOString()
+                    });
+                    console.log(`[INFO] Updated appointment ${appointmentId} - WebSocket error`);
+                } catch (updateError) {
+                    console.error(`[ERROR] Failed to update appointment on WebSocket error for ${appointmentId}:`, updateError);
+                }
+            })();
+            
             // Clean up STT stream
             if (sttStream) {
                 sttStream.destroy();

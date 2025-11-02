@@ -929,7 +929,7 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
         
         // *** FIX: Only include lastCallStatus if callStatus is defined ***
         let updatePayload = {};
-        if (callStatus) {
+        if (callStatus && callStatus !== 'undefined') {
             updatePayload.lastCallStatus = callStatus;
         }
 
@@ -942,6 +942,19 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
                 conversationState: CONVERSATION_STATES.FAILED
             };
             await addToConversationHistory(appointmentId, 'system', 'Call answered by voicemail', { voicemail: true });
+            
+        } else if (answeredBy === 'human' && !callStatus) {
+            // *** FIX: Handle case where call is answered by human but status is undefined ***
+            // This often happens with streaming calls where the WebSocket connection is active
+            updatePayload = { 
+                ...updatePayload,
+                callAnsweredAt: new Date().toISOString(),
+                callInProgress: true
+            };
+            await addToConversationHistory(appointmentId, 'system', 'Call answered by human - streaming active', { 
+                answered: true, 
+                streaming: true 
+            });
             
         } else if (callStatus === 'busy') {
             updatePayload = { 
@@ -998,11 +1011,15 @@ export async function updateCallStatus(appointmentId, callStatus, answeredBy) {
         }
         
         // Update if we have meaningful changes
-        if (Object.keys(updatePayload).length > 1) {
+        if (Object.keys(updatePayload).length > 0) {
             console.log(`[INFO] updateCallStatus: Updating appointment ${appointmentId}:`, updatePayload);
             await appointmentRef.update(updatePayload);
-        } else {
+        } else if (callStatus && callStatus !== 'undefined') {
+            // Only update lastCallStatus if we have a valid status
+            console.log(`[INFO] updateCallStatus: Updating lastCallStatus for ${appointmentId}: ${callStatus}`);
             await appointmentRef.update({ lastCallStatus: callStatus });
+        } else {
+            console.log(`[INFO] updateCallStatus: No valid updates for ${appointmentId} - callStatus: ${callStatus}, answeredBy: ${answeredBy}`);
         }
         
     } catch (error) {
