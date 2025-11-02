@@ -63,17 +63,17 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
  * @param {Stream} inputStream - MP3 audio stream from ElevenLabs
  * @returns {Stream} - mulaw audio stream
  */
+// 🛠️ CORRECTED CODE
 function transcodeMp3ToMulaw(inputStream) {
     const outputStream = new PassThrough();
-
-    // Create FFmpeg command to convert MP3 stream to mulaw
+    
     const ffmpegProcess = ffmpeg()
         .input(inputStream)
         .inputFormat('mp3')
         .audioCodec('pcm_mulaw')
         .audioFrequency(8000)
         .audioChannels(1)
-        .audioQuality(0)
+        // .audioQuality(0) // ⬅️ ✅ This line is now removed
         .format('mulaw')
         .on('error', (err) => {
             console.error('[ERROR] FFmpeg transcoding failed:', err.message);
@@ -86,7 +86,7 @@ function transcodeMp3ToMulaw(inputStream) {
             console.log('[INFO] FFmpeg transcoding started:', commandLine);
         })
         .pipe(outputStream, { end: true });
-
+        
     return outputStream;
 }
 
