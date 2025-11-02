@@ -4,7 +4,7 @@ import { SpeechClient } from '@google-cloud/speech';
 import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
 import { generateGeminiText, generateGeminiTextStream } from '../utils/geminiClient.js';
-import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
+import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevwenLabsClient.js';
 import { db, admin } from '../config/firebaseAdmin.js';
 
 const speechClient = new SpeechClient();
@@ -19,7 +19,7 @@ async function getAppointmentRef(appointmentId) {
     try {
         const snapshot = await db.collectionGroup('appointments').get();
         const foundDoc = snapshot.docs.find(doc => doc.id === appointmentId);
-        
+
         if (!foundDoc) {
             console.error(`[ERROR] getAppointmentRef: Could not find appointment ${appointmentId}.`);
             throw new Error(`Could not find appointment ${appointmentId}`);
@@ -44,7 +44,7 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
             timestamp,
             ...metadata
         };
-        
+
         await appointmentRef.update({
             conversationHistory: admin.firestore.FieldValue.arrayUnion(historyEntry),
             lastActivity: timestamp
@@ -62,7 +62,7 @@ async function addToConversationHistory(appointmentId, speaker, message, metadat
  */
 function transcodeMp3ToMulaw(inputStream) {
     const outputStream = new PassThrough();
-    
+
     // Create FFmpeg command to convert MP3 stream to mulaw
     const ffmpegProcess = ffmpeg()
         .input(inputStream)
@@ -83,7 +83,7 @@ function transcodeMp3ToMulaw(inputStream) {
             console.log('[INFO] FFmpeg transcoding started:', commandLine);
         })
         .pipe(outputStream, { end: true });
-        
+
     return outputStream;
 }
 
@@ -93,18 +93,24 @@ function transcodeMp3ToMulaw(inputStream) {
 
 
 export function setupWebSocketServer(server) {
-    
+
     // Create a WebSocket server that attaches to your main HTTP server
     // and listens on a specific path.
-    const wss = new WebSocketServer({ server, path: '/audio-stream' });
+    const wss = new WebSocketServer({ server });
 
     wss.on('connection', (ws, req) => {
         console.log(`[INFO] WebSocket connection established: ${req.url}`);
-        
+
         // Get the appointmentId from the URL
+        if (!req.url.startsWith('/audio-stream/')) {
+            console.warn(`[WARN] Ignoring invalid WebSocket connection at: ${req.url}`);
+            ws.close();
+            return;
+        }
         const urlParts = req.url.split('/');
         const appointmentId = urlParts[urlParts.length - 1];
-        
+
+
         console.log(`[INFO] Handling streaming call for appointment: ${appointmentId}`);
 
         // Initialize Google Speech-to-Text streaming
@@ -132,28 +138,28 @@ export function setupWebSocketServer(server) {
                     if (data.results[0] && data.results[0].isFinal) {
                         const transcript = data.results[0].alternatives[0].transcript;
                         console.log(`[STT] User said: "${transcript}"`);
-                        
+
                         // Log user input to conversation history
                         addToConversationHistory(appointmentId, 'user', transcript).catch(console.error);
-                        
+
                         // Stop listening while AI responds
                         isListening = false;
-                        
+
                         // ✅ FIX: Call the new, fast streaming pipeline directly
 
                         // 1. Cancel any audio that's already playing (for interruption)
-                        cancelActiveStreams(); 
+                        cancelActiveStreams();
 
                         // 2. Create the prompt with appointment context
                         (async () => {
                             try {
                                 const appointmentRef = await getAppointmentRef(appointmentId);
                                 const appointment = (await appointmentRef.get()).data();
-                                
+
                                 const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
                                 const reason = appointment.reasonForAppointment || 'medical consultation';
                                 const userContact = appointment.userContact || 'No contact number on file';
-                                
+
                                 const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
                                 
                                 CONTEXT:
@@ -174,7 +180,7 @@ export function setupWebSocketServer(server) {
                                 });
                             } catch (error) {
                                 console.error('[ERROR] Failed to get appointment context:', error);
-                                
+
                                 // Fallback prompt
                                 const prompt = `You are Sarah from Aiva Health calling to schedule an appointment. 
                                 User just said: "${transcript}"
@@ -203,28 +209,28 @@ export function setupWebSocketServer(server) {
         async function streamGeminiToTwilio(prompt) {
             try {
                 console.log(`[STREAM] Starting real-time Gemini -> ElevenLabs -> Twilio pipeline`);
-                
+
                 let textBuffer = '';
                 let sentenceBuffer = '';
                 const minChunkSize = 10; // Minimum characters before sending to TTS
-                
+
                 // Start streaming from Gemini
                 const geminiStream = generateGeminiTextStream(prompt);
-                
+
                 for await (const textChunk of geminiStream) {
                     textBuffer += textChunk;
                     sentenceBuffer += textChunk;
-                    
+
                     console.log(`[STREAM] Received text chunk: "${textChunk}"`);
-                    
+
                     // Look for sentence boundaries or sufficient text accumulation
                     const sentenceEnders = /[.!?]\s/g;
                     const sentenceMatch = sentenceBuffer.match(sentenceEnders);
-                    
+
                     // If we have a complete sentence or enough text, stream it
                     if (sentenceMatch || sentenceBuffer.length >= minChunkSize * 3) {
                         let textToStream;
-                        
+
                         if (sentenceMatch) {
                             // Send complete sentences
                             const lastSentenceEnd = sentenceBuffer.lastIndexOf(sentenceMatch[sentenceMatch.length - 1]) + sentenceMatch[sentenceMatch.length - 1].length;
@@ -235,36 +241,36 @@ export function setupWebSocketServer(server) {
                             textToStream = sentenceBuffer.trim();
                             sentenceBuffer = '';
                         }
-                        
+
                         if (textToStream.length > 0) {
                             console.log(`[STREAM] Streaming to TTS: "${textToStream}"`);
-                            
+
                             // Stream this text chunk to ElevenLabs/Twilio immediately
                             // Don't await - let it stream in parallel with Gemini generation
                             streamAudioToTwilio(textToStream).catch(error => {
                                 console.error('[ERROR] Failed to stream audio chunk:', error);
                             });
-                            
+
                             // Small delay to prevent overwhelming the TTS API
                             await new Promise(resolve => setTimeout(resolve, 100));
                         }
                     }
                 }
-                
+
                 // Send any remaining text
                 if (sentenceBuffer.trim().length > 0) {
                     console.log(`[STREAM] Streaming final chunk: "${sentenceBuffer.trim()}"`);
                     await streamAudioToTwilio(sentenceBuffer.trim());
                 }
-                
+
                 console.log(`[STREAM] Complete response streamed: "${textBuffer}"`);
-                
+
                 // Log the complete AI response to conversation history
                 addToConversationHistory(appointmentId, 'assistant', textBuffer).catch(console.error);
-                
+
             } catch (error) {
                 console.error('[ERROR] Failed to stream from Gemini to Twilio:', error);
-                
+
                 // Fallback to non-streaming
                 const fallbackResponse = "I apologize for the delay. Could you please repeat your question?";
                 await streamAudioToTwilio(fallbackResponse);
@@ -288,10 +294,10 @@ export function setupWebSocketServer(server) {
         async function streamAudioToTwilio(textStream) {
             const streamId = ++currentStreamId;
             console.log(`[TTS] Starting stream ${streamId}: "${textStream}"`);
-            
+
             // Add this stream to active streams
             activeStreams.add(streamId);
-            
+
             try {
                 // 1. Get audio stream from ElevenLabs using our working client
                 const audioStream = await generateSpeechStream(textStream, VOICE_IDS.SARAH);
@@ -304,7 +310,7 @@ export function setupWebSocketServer(server) {
 
                 // 2. Transcode MP3 to mulaw
                 const mulawStream = transcodeMp3ToMulaw(audioStream);
-                
+
                 // 3. Stream the transcoded audio to Twilio
                 mulawStream.on('data', (chunk) => {
                     // Only send if this stream is still active
@@ -317,11 +323,11 @@ export function setupWebSocketServer(server) {
                         }));
                     }
                 });
-                
+
                 mulawStream.on('end', () => {
                     // Remove from active streams
                     activeStreams.delete(streamId);
-                    
+
                     // Send a "mark" message to signal end of this audio segment
                     console.log(`[INFO] Stream ${streamId} finished. Sending mark.`);
                     if (ws.readyState === 1) {
@@ -334,10 +340,10 @@ export function setupWebSocketServer(server) {
 
                 mulawStream.on('error', (error) => {
                     console.error(`[ERROR] Stream ${streamId} transcoding failed:`, error);
-                    
+
                     // Remove from active streams
                     activeStreams.delete(streamId);
-                    
+
                     // Send mark anyway to continue conversation
                     if (ws.readyState === 1) {
                         ws.send(JSON.stringify({
@@ -349,10 +355,10 @@ export function setupWebSocketServer(server) {
 
             } catch (error) {
                 console.error(`[ERROR] Stream ${streamId} failed:`, error);
-                
+
                 // Remove from active streams
                 activeStreams.delete(streamId);
-                
+
                 // Fallback: Send a mark to continue conversation
                 if (ws.readyState === 1) {
                     ws.send(JSON.stringify({
@@ -362,7 +368,7 @@ export function setupWebSocketServer(server) {
                 }
             }
         }
-        
+
         // --- Handle incoming messages from Twilio ---
         ws.on('message', (message) => {
             const msg = JSON.parse(message);
@@ -370,7 +376,7 @@ export function setupWebSocketServer(server) {
             switch (msg.event) {
                 case 'start':
                     console.log(`[INFO] Twilio stream started for ${appointmentId}.`);
-                    
+
                     // Update appointment status to indicate streaming has started
                     (async () => {
                         try {
@@ -385,30 +391,30 @@ export function setupWebSocketServer(server) {
                             console.error(`[ERROR] Failed to update appointment status for ${appointmentId}:`, error);
                         }
                     })();
-                    
+
                     // Initialize STT stream
                     initializeSttStream();
-                    
+
                     // Get appointment details for personalized greeting
                     (async () => {
                         try {
                             const appointmentRef = await getAppointmentRef(appointmentId);
                             const appointment = (await appointmentRef.get()).data();
-                            
+
                             const userName = appointment.userName ? appointment.userName.replace(/^(Dr\.?\s*)/i, '').trim() : 'the patient';
                             const reason = appointment.reasonForAppointment || 'medical consultation';
-                            
+
                             // Send personalized initial greeting
                             const greeting = `Hi! This is Sarah from Aiva Health. I'm calling on behalf of ${userName} to schedule an appointment for ${reason}. What time works best for you?`;
-                            
+
                             // Log the greeting
                             addToConversationHistory(appointmentId, 'assistant', greeting).catch(console.error);
-                            
+
                             // Call our streaming TTS function
                             streamAudioToTwilio(greeting);
                         } catch (error) {
                             console.error('[ERROR] Failed to get appointment details:', error);
-                            
+
                             // Fallback greeting
                             const greeting = `Hi! This is Sarah from Aiva Health. I'm calling to schedule an appointment. What time works best for you?`;
                             addToConversationHistory(appointmentId, 'assistant', greeting).catch(console.error);
@@ -433,7 +439,7 @@ export function setupWebSocketServer(server) {
 
                 case 'stop':
                     console.log(`[INFO] Twilio stream stopped for ${appointmentId}.`);
-                    
+
                     // Update appointment status to indicate streaming has ended
                     (async () => {
                         try {
@@ -448,7 +454,7 @@ export function setupWebSocketServer(server) {
                             console.error(`[ERROR] Failed to update appointment status on stop for ${appointmentId}:`, error);
                         }
                     })();
-                    
+
                     // Clean up STT stream
                     if (sttStream) {
                         sttStream.destroy();
@@ -456,13 +462,13 @@ export function setupWebSocketServer(server) {
                     }
                     isListening = false;
                     break;
-                
+
                 case 'mark':
                     // This confirms our "ai-finished-speaking" mark was received.
                     // This is your signal to start listening to the user again.
                     console.log('[INFO] Received mark confirmation from Twilio - starting to listen.');
                     isListening = true;
-                    
+
                     // Reinitialize STT stream for next user input
                     if (!sttStream) {
                         initializeSttStream();
@@ -473,7 +479,7 @@ export function setupWebSocketServer(server) {
 
         ws.on('close', (code, reason) => {
             console.log(`[INFO] WebSocket closed for ${appointmentId}: ${code} ${reason.toString()}`);
-            
+
             // Update appointment status when WebSocket closes
             (async () => {
                 try {
@@ -488,7 +494,7 @@ export function setupWebSocketServer(server) {
                     console.error(`[ERROR] Failed to update appointment on WebSocket close for ${appointmentId}:`, error);
                 }
             })();
-            
+
             // Clean up STT stream
             if (sttStream) {
                 sttStream.destroy();
@@ -499,7 +505,7 @@ export function setupWebSocketServer(server) {
 
         ws.on('error', (error) => {
             console.error(`[ERROR] WebSocket error for ${appointmentId}:`, error);
-            
+
             // Update appointment status on WebSocket error
             (async () => {
                 try {
@@ -514,7 +520,7 @@ export function setupWebSocketServer(server) {
                     console.error(`[ERROR] Failed to update appointment on WebSocket error for ${appointmentId}:`, updateError);
                 }
             })();
-            
+
             // Clean up STT stream
             if (sttStream) {
                 sttStream.destroy();
