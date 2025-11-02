@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws';
 import { SpeechClient } from '@google-cloud/speech';
 import ffmpeg from 'fluent-ffmpeg';
 import { PassThrough } from 'stream';
-import { generateGeminiText, generateGeminiTextStream } from '../utils/geminiClient.js';
+import { generateChatgptText, generateChatgptTextStream } from '../utils/chatgptClient.js';
 import { generateSpeech, generateSpeechStream, VOICE_IDS } from '../utils/elevenLabsClient.js';
 import { db, admin } from '../config/firebaseAdmin.js';
 import ffmpegStatic from 'ffmpeg-static';
@@ -217,8 +217,8 @@ export function setupWebSocketServer(server) {
                 let sentenceBuffer = '';
                 const minChunkSize = 10; // Minimum characters before sending to TTS
 
-                // Start streaming from Gemini
-                const geminiStream = generateGeminiTextStream(prompt);
+                // Start streaming from ChatGPT (gpt-4o-mini)
+                const geminiStream = generateChatgptTextStream(prompt);
 
                 for await (const textChunk of geminiStream) {
                     textBuffer += textChunk;
