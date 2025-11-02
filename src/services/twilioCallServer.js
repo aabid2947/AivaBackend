@@ -10,7 +10,155 @@ import ffmpegStatic from 'ffmpeg-static';
 
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
-const speechClient = new SpeechClient();
+// Workaround STT: do not use Google Speech client here.
+// Instead we buffer incoming μ-law audio and transcribe using OpenAI Whisper
+// when available, or save audio for offline processing.
+const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+async function mulawBufferToWavBuffer(mulawBuffer) {
+    return new Promise((resolve, reject) => {
+        try {
+            const ff = spawn('ffmpeg', [
+                '-f', 'mulaw',
+                '-ar', '8000',
+                '-ac', '1',
+                '-i', 'pipe:0',
+                '-ar', '16000',
+                '-ac', '1',
+                '-f', 'wav',
+            // Simple buffer-based STT stream fallback.
+            // We collect incoming μ-law audio chunks and, after a short silence (inactivity),
+            // convert the buffer to WAV and call OpenAI Whisper (if available). If OpenAI
+            // is not available, we save the raw buffer to disk for offline processing.
+
+            let sttBuffer = [];
+            let inactivityTimer = null;
+            const SILENCE_MS = 700; // treat this silence as end-of-utterance
+
+            const processBuffer = async () => {
+                if (!sttBuffer || sttBuffer.length === 0) return;
+                const mulawBuffer = Buffer.concat(sttBuffer);
+                sttBuffer = [];
+
+                // Temporarily stop listening while we process
+                isListening = false;
+
+                try {
+                    // Convert mulaw to wav buffer
+                    const wavBuffer = await mulawBufferToWavBuffer(mulawBuffer);
+
+                    // Try OpenAI Whisper transcription
+                    const transcript = await transcribeWithOpenAI(wavBuffer);
+
+                    if (transcript) {
+                        // Add to conversation and trigger AI response pipeline
+                        await addToConversationHistory(appointmentId, 'user', transcript).catch(() => {});
+                        cancelActiveStreams();
+
+                        // Build prompt and stream AI -> TTS -> Twilio
+                        try {
+                            const appointmentRef = await getAppointmentRef(appointmentId);
+                            const appointment = (await appointmentRef.get()).data();
+                            // Use existing pipeline: create prompt then stream
+                            const contextPrompt = transcript; // passthrough
+                            // call streamGeminiToTwilio directly with prompt text
+                            streamGeminiToTwilio(contextPrompt).catch(() => {});
+                        } catch (err) {
+                            // swallow errors - continue conversation
+                        }
+                    } else {
+                        // If transcription not available, save raw audio for offline processing
+                        await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
+                    }
+                } catch (err) {
+                    // On any error, save raw buffer for offline processing
+                    await saveMulawForOffline(mulawBuffer, appointmentId).catch(() => {});
+                } finally {
+                    // Re-enable listening after a short delay to avoid immediate re-trigger
+                    setTimeout(() => { isListening = true; }, 250);
+                }
+            };
+
+            const sttStreamShim = {
+                write: (chunk) => {
+                    try {
+                        // Twilio media payloads are base64-encoded μ-law frames
+                        const raw = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'base64');
+                        sttBuffer.push(raw);
+
+                        if (inactivityTimer) clearTimeout(inactivityTimer);
+                        inactivityTimer = setTimeout(() => {
+                            processBuffer().catch(() => {});
+                        }, SILENCE_MS);
+                    } catch (e) {
+                        // ignore
+                    }
+                },
+                destroy: () => {
+                    if (inactivityTimer) clearTimeout(inactivityTimer);
+                    sttBuffer = [];
+                }
+            };
+
+            sttStream = sttStreamShim;
+            return sttStream;
+    const OPENAI_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_KEY) return null;
+
+    // Use node-fetch or global fetch (Node 18+)
+    const formData = new (global.FormData || require('form-data'))();
+    // Try to append as Blob if available, otherwise as Buffer
+    try {
+        // For environments with global FormData + Blob
+        if (typeof Blob !== 'undefined') {
+            const blob = new Blob([wavBuffer], { type: 'audio/wav' });
+            formData.append('file', blob, 'audio.wav');
+        } else {
+            formData.append('file', wavBuffer, { filename: 'audio.wav', contentType: 'audio/wav' });
+        }
+    } catch (e) {
+        // Fallback for "form-data" package
+        formData.append('file', wavBuffer, 'audio.wav');
+    }
+
+    formData.append('model', 'whisper-1');
+
+    const fetchImpl = global.fetch || require('node-fetch');
+    const headers = { 'Authorization': `Bearer ${OPENAI_KEY}` };
+
+    // If using form-data package, let it set headers
+    if (formData.getHeaders && typeof formData.getHeaders === 'function') {
+        Object.assign(headers, formData.getHeaders());
+    }
+
+    const res = await fetchImpl('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers,
+        body: formData
+    });
+
+    if (!res.ok) {
+        return null;
+    }
+
+    const json = await res.json();
+    return json.text || null;
+}
+
+async function saveMulawForOffline(mulawBuffer, appointmentId) {
+    try {
+        const tmpDir = os.tmpdir();
+        const fileName = `stt_${appointmentId || 'unknown'}_${Date.now()}.raw`;
+        const filePath = path.join(tmpDir, fileName);
+        await fs.promises.writeFile(filePath, mulawBuffer);
+        return filePath;
+    } catch (err) {
+        return null;
+    }
+}
 
 // Voice ID for ElevenLabs (using Rachel/Sarah voice)
 const VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
